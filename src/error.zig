@@ -21,12 +21,6 @@ pub const ParserError = error{
     TableRedefinition,
 };
 
-pub const TimestampError = error{
-    InvalidDate,
-    InvalidTime,
-    BadDateTimeFormat,
-};
-
 pub const ErrorContext = struct {
     msg: types.String,
     backup_msg: [64]u8,

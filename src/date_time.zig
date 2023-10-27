@@ -1,7 +1,12 @@
 const std = @import("std");
 const ascii = std.ascii;
 const utils = @import("utils.zig");
-const TimestampError = @import("error.zig").TimestampError;
+
+pub const DateTimeError = error{
+    InvalidDate,
+    InvalidTime,
+    BadDateTimeFormat,
+};
 
 const Date = struct {
     // year   = 4DIGIT
@@ -108,7 +113,7 @@ const Time = struct {
         const m = utils.parseDigits(u8, src[3..5]) catch return null;
         const s = utils.parseDigits(u8, src[6..8]) catch return null;
 
-        var ns: u32 = 0;
+        var ns: u32 = undefined;
 
         var offs: ?TimeOffset = null;
 
@@ -153,8 +158,8 @@ const Time = struct {
         );
     }
 
-    /// ns should be set to 0 before passing it.
     fn parseNS(src: []const u8, ns: *u32) usize {
+        ns.* = 0;
         var offset: u32 = 100000000;
         for (0..src.len) |i| {
             if (ascii.isDigit(src[i])) {
@@ -175,7 +180,7 @@ const Time = struct {
     }
 };
 
-pub const Timestamp = struct {
+pub const DateTime = struct {
     date: ?Date,
     time: ?Time,
 
@@ -194,7 +199,7 @@ pub const Timestamp = struct {
 
         if (self.date) |*d| {
             if (!d.isValid()) {
-                return TimestampError.InvalidDate;
+                return DateTimeError.InvalidDate;
             }
             if (slice.len > 10 and (slice[10] == 'T' or slice[10] == 't')) {
                 slice = slice[11..slice.len];
@@ -208,12 +213,12 @@ pub const Timestamp = struct {
 
         if (self.time) |*t| {
             if (!t.isValid()) {
-                return TimestampError.InvalidTime;
+                return DateTimeError.InvalidTime;
             }
         } else {
             if (self.date == null) {
                 // Error couldn't parse a date or a time
-                return TimestampError.BadDateTimeFormat;
+                return DateTimeError.BadDateTimeFormat;
             }
         }
 
@@ -221,7 +226,7 @@ pub const Timestamp = struct {
     }
 };
 
-test "Timestamp" {
+test "DateTime" {
     const testing = std.testing;
-    try testing.expectError(TimestampError.InvalidDate, Timestamp.fromString("1977-02-29T07:32:00"));
+    try testing.expectError(DateTimeError.InvalidDate, DateTime.fromString("1977-02-29T07:32:00"));
 }

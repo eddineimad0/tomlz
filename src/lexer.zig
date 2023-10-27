@@ -575,7 +575,7 @@ pub const Lexer = struct {
         }
 
         // either a date or fail.
-        var ts = try date_time.Timestamp.fromString(buff);
+        var ts = try date_time.DateTime.fromString(buff);
         val.* = .{ .DateTime = ts };
         return;
     }

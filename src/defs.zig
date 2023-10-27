@@ -1,7 +1,6 @@
 const b = @import("builtin");
 pub const IS_WINDOWS: bool = b.os.tag == .windows;
 pub const UTF8BOMLE: u24 = 0xBFBBEF;
-
 // Options
 pub const MAX_NESTTING_LEVEL = @as(u8, 8);
 pub const INITAL_KEY_LEN = @as(u8, 128);

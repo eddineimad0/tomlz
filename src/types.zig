@@ -25,7 +25,7 @@ pub const Value = union(ValueType) {
     Array: Array(Value),
     TablesArray: Array(Table),
     Table: Table,
-    DateTime: date_time.Timestamp,
+    DateTime: date_time.DateTime,
 };
 
 pub fn freeValue(v: *Value, allocator: Allocator) void {
