@@ -16,6 +16,32 @@ fn parseTomlFile(f: fs.File) void {
     printTable(t);
 }
 
+fn printArray(a: *const toml.TomlArray) void {
+    for (0..a.size()) |i| {
+        const value = a.ptrAt(i);
+        switch (value.*) {
+            .String => |slice| {
+                std.debug.print("{s},", .{slice});
+            },
+            .Boolean => |b| std.debug.print("{},", .{b}),
+            .Integer => |int| std.debug.print("{d},", .{int}),
+            .Float => |fl| std.debug.print("{d},", .{fl}),
+            .DateTime => |*ts| std.debug.print("{any},", .{ts.*}),
+            .Table => |*table| {
+                std.debug.print("{{ ", .{});
+                printTable(table);
+                std.debug.print("\n}},", .{});
+            },
+            .Array => |*inner_arry| {
+                std.debug.print("[ ", .{});
+                printArray(inner_arry);
+                std.debug.print("],", .{});
+            },
+            else => unreachable,
+        }
+    }
+}
+
 fn printTable(t: *const toml.TomlTable) void {
     var it = t.iterator();
     while (it.next()) |e| {
@@ -28,9 +54,7 @@ fn printTable(t: *const toml.TomlTable) void {
             .DateTime => |*ts| std.debug.print("{any},", .{ts.*}),
             .Array => |*a| {
                 std.debug.print("[ ", .{});
-                for (0..a.size()) |i| {
-                    std.debug.print("{any},", .{a.ptrAt(i).*});
-                }
+                printArray(a);
                 std.debug.print("]\n", .{});
             },
             .Table => |*table| {

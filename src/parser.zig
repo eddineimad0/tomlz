@@ -718,38 +718,3 @@ pub const Parser = struct {
         }
     }
 };
-
-fn printTable(t: *const TomlTable) void {
-    var it = t.iterator();
-    while (it.next()) |e| {
-        std.debug.print("\n{s} => ", .{e.key_ptr.*});
-        switch (e.value_ptr.*) {
-            .String => |slice| std.debug.print("{s}", .{slice}),
-            .Boolean => |b| std.debug.print("{},", .{b}),
-            .Integer => |i| std.debug.print("{d},", .{i}),
-            .Float => |fl| std.debug.print("{d},", .{fl}),
-            .DateTime => |*ts| std.debug.print("{any},", .{ts.*}),
-            // .Array => |_| {
-            //     // handle arry
-            // },
-            .Table => |*table| {
-                std.debug.print("{{ ", .{});
-                printTable(table);
-                std.debug.print("\n}}", .{});
-            },
-            else => continue,
-        }
-    }
-}
-
-test "Parser" {
-    const testing = std.testing;
-    const f = try std.fs.openFileAbsoluteZ("E:\\Code\\Zig\\toml\\examples\\keys\\keys00.toml", .{});
-    defer f.close();
-    var ifs = io.StreamSource{ .file = f };
-    var p = Parser.init(&ifs, testing.allocator);
-    defer p.deinit();
-    var t = try p.parse();
-    printTable(t);
-    std.debug.print("\n", .{});
-}

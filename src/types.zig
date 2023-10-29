@@ -81,11 +81,11 @@ pub fn Array(comptime T: type) type {
             try self.array.append(item);
         }
 
-        pub inline fn size(self: *Self) usize {
+        pub inline fn size(self: *const Self) usize {
             return self.array.items.len;
         }
 
-        pub inline fn ptrAt(self: *Self, index: usize) *const T {
+        pub inline fn ptrAt(self: *const Self, index: usize) *const T {
             return &self.array.items[index];
         }
 
