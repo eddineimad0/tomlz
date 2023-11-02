@@ -1,6 +1,5 @@
 const std = @import("std");
 const ascii = std.ascii;
-const utils = @import("utils.zig");
 
 /// Intended for fast parsing of a sequence of ascii digits in base 10.
 /// Negative numbers aren't supported.
@@ -57,9 +56,9 @@ const Date = struct {
         if (src[4] != '-' or src[7] != '-') {
             return null;
         }
-        const y = utils.parseDigits(u32, src[0..4]) catch return null;
-        const m = utils.parseDigits(u8, src[5..7]) catch return null;
-        const d = utils.parseDigits(u8, src[8..10]) catch return null;
+        const y = parseDigits(u32, src[0..4]) catch return null;
+        const m = parseDigits(u8, src[5..7]) catch return null;
+        const d = parseDigits(u8, src[8..10]) catch return null;
         return init(y, m, d);
     }
 
@@ -131,9 +130,9 @@ const Time = struct {
         if (src[2] != ':' or src[5] != ':') {
             return null;
         }
-        const h = utils.parseDigits(u8, src[0..2]) catch return null;
-        const m = utils.parseDigits(u8, src[3..5]) catch return null;
-        const s = utils.parseDigits(u8, src[6..8]) catch return null;
+        const h = parseDigits(u8, src[0..2]) catch return null;
+        const m = parseDigits(u8, src[3..5]) catch return null;
+        const s = parseDigits(u8, src[6..8]) catch return null;
 
         var ns: u32 = 0;
 
@@ -158,8 +157,8 @@ const Time = struct {
                         if (slice.len < 6 or slice[3] != ':') {
                             return null;
                         }
-                        var off_h: u8 = utils.parseDigits(u8, slice[1..3]) catch return null;
-                        var off_m: u8 = utils.parseDigits(u8, slice[4..6]) catch return null;
+                        var off_h: u8 = parseDigits(u8, slice[1..3]) catch return null;
+                        var off_m: u8 = parseDigits(u8, slice[4..6]) catch return null;
 
                         offs = TimeOffset{
                             .z = false,

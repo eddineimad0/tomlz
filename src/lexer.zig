@@ -8,7 +8,6 @@ const types = @import("types.zig");
 const token = @import("token.zig");
 const erro = @import("error.zig");
 const defs = @import("defs.zig");
-const utils = @import("utils.zig");
 const date_time = @import("date_time.zig");
 const Token = token.Token;
 const TokenType = token.TokenType;
