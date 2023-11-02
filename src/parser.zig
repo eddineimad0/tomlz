@@ -22,8 +22,6 @@ pub const Parser = struct {
     pair: struct {
         key: types.Key,
         val: types.Value,
-        key_set: bool,
-        val_set: bool,
     },
     table_path: ArrayList([]const u8),
     root_table: TomlTable,
@@ -45,8 +43,6 @@ pub const Parser = struct {
             .pair = .{
                 .key = types.Key.init(allocator),
                 .val = undefined,
-                .key_set = false,
-                .val_set = false,
             },
             .err_ctx = ErrorContext.init(allocator),
             .table_path = ArrayList([]const u8).init(allocator),
@@ -62,17 +58,13 @@ pub const Parser = struct {
     pub fn deinit(self: *Self) void {
         // Deinit the pairs.
         self.pair.key.deinit();
-        // if (self.pair.val_set) {
-        //     types.freeValue(&self.pair.val, self.allocator);
-        // }
         self.clearTablePath();
         self.table_path.deinit();
         self.err_ctx.deinit();
         self.root_table.deinit();
     }
 
-    /// Stores the current key in the table_path and unsets,
-    /// the key_set flag.
+    /// Append a new key to the table_path,
     /// # Parameters
     /// `key`: the key to store.
     fn appendToTablePath(self: *Self, key: []const u8) ParserError!void {
@@ -172,33 +164,14 @@ pub const Parser = struct {
         return &self.active_table.get_mut(key).?.Table;
     }
 
-    /// Inserts the self.pair into self.active_table.
-    fn commitPair(self: *Self) ParserError!void {
-        _ = self;
-        // errdefer {
-        //     self.allocator.free(key);
-        //     types.freeValue(&self.pair.val, self.allocator);
-        // }
-        // self.active_table.put(key, self.pair.val) catch {
-        //     return self.err_ctx.reportError(
-        //         ParserError.OutOfMemory,
-        //         defs.ERROR_OUT_OF_MEMORY,
-        //         .{},
-        //     );
-        // };
-        //
-        // self.active_table = curr_tab;
-    }
-
     /// Checks if the current key is a duplicate in the active_table.
-    fn checkKeyDup(self: *Self, key: []const u8) ?*types.Value {
+    inline fn checkKeyDup(self: *Self, key: []const u8) ?*types.Value {
         return self.active_table.get_mut(key);
     }
 
     /// Parse the stream and return a poniter to
     /// the resulting table.
     pub fn parse(self: *Self) ParserError!*const TomlTable {
-        // Prepare.
         self.active_table = &self.root_table;
         self.table_path.ensureTotalCapacity(defs.MAX_NESTTING_LEVEL) catch {
             return self.err_ctx.reportError(
