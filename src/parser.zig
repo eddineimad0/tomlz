@@ -237,8 +237,8 @@ pub const Parser = struct {
         try self.pair.key.ensureTotalCapacity(defs.INITAL_KEY_LEN);
         if (t.cntxt.type == .String) {
             switch (t.c) {
-                '\'' => try self.__lex.nextStringSQ(&self.pair.key, &self.err_ctx),
-                '"' => try self.__lex.nextStringDQ(&self.pair.key, &self.err_ctx),
+                '\'' => try self.__lex.nextStringSQ(&self.pair.key, &self.err_ctx, true),
+                '"' => try self.__lex.nextStringDQ(&self.pair.key, &self.err_ctx, true),
                 else => unreachable,
             }
             // If the key is empty ""
@@ -403,9 +403,9 @@ pub const Parser = struct {
         errdefer s.deinit();
 
         if (delim == '\'') {
-            try self.__lex.nextStringSQ(&s, &self.err_ctx);
+            try self.__lex.nextStringSQ(&s, &self.err_ctx, false);
         } else {
-            try self.__lex.nextStringDQ(&s, &self.err_ctx);
+            try self.__lex.nextStringDQ(&s, &self.err_ctx, false);
         }
 
         const slice = try s.toOwnedSlice();

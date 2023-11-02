@@ -6,12 +6,12 @@ const mem = std.mem;
 const debug = std.debug;
 const types = @import("types.zig");
 const token = @import("token.zig");
-const erro = @import("error.zig");
 const defs = @import("defs.zig");
 const date_time = @import("date_time.zig");
 const Token = token.Token;
 const TokenType = token.TokenType;
-const ParserError = erro.ParserError;
+const ParserError = @import("error.zig").ParserError;
+const ErrorContext = @import("error.zig").ErrorContext;
 
 pub const Lexer = struct {
     line: usize,
@@ -187,7 +187,7 @@ pub const Lexer = struct {
         return;
     }
 
-    pub fn nextStringSQ(self: *Self, str: *types.String, err: *erro.ErrorContext) !void {
+    pub fn nextStringSQ(self: *Self, str: *types.String, err: *ErrorContext, is_key: bool) !void {
         var c: u8 = undefined;
         if (self.nextByte(&c) and c == '\'') {
             // Possibly a multi-line literal string.
@@ -198,6 +198,14 @@ pub const Lexer = struct {
                 return;
             }
 
+            if (is_key) {
+                // keys can't be a multi-line
+                return err.reportError(
+                    ParserError.BadSyntax,
+                    defs.ERROR_BAD_SYNTAX,
+                    .{ self.line, self.pos, "Quotted keys can't be multi-line" },
+                );
+            }
             // A newline immediately following the opening delimiter will be trimmed.
             self.trimNewLine();
 
@@ -284,7 +292,7 @@ pub const Lexer = struct {
         );
     }
 
-    pub fn nextStringDQ(self: *Self, str: *types.String, err: *erro.ErrorContext) !void {
+    pub fn nextStringDQ(self: *Self, str: *types.String, err: *ErrorContext, is_key: bool) !void {
         var c: u8 = undefined;
         var multi_line = false;
         if (self.nextByte(&c) and c == '"') {
@@ -294,6 +302,14 @@ pub const Lexer = struct {
                 // Rewind before returning.
                 self.toLastByte();
                 return;
+            }
+            if (is_key) {
+                // keys can't be a multi-line
+                return err.reportError(
+                    ParserError.BadSyntax,
+                    defs.ERROR_BAD_SYNTAX,
+                    .{ self.line, self.pos, "Quotted keys can't be multi-line" },
+                );
             }
             multi_line = true;
             // A newline immediately following the opening delimiter will be trimmed.
