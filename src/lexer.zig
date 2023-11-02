@@ -415,14 +415,14 @@ pub const Lexer = struct {
                             try str.writer().writeAll(cp_slice);
                             continue;
                         },
-                        'b' => c = 0x08,
+                        'b' => c = 0x08, // Backspace
                         't' => c = '\t',
                         'n' => {
                             c = '\n';
                         },
-                        'f' => c = 0x0C,
+                        'f' => c = 0x0C, // Form feed
                         'r' => c = '\r',
-                        '"', '\\' => {}, // no need to escape.
+                        '"', '\\' => {}, // No need to escape.
                         else => {
                             // What are you trying to escape.
                             return err.reportError(
@@ -560,7 +560,7 @@ pub const Lexer = struct {
         return num;
     }
 
-    fn parseRawValue(buff: []const u8, val: *types.Value) !void {
+    fn lexRawValue(buff: []const u8, val: *types.Value) !void {
         var success: bool = false;
         var i = nextInt(buff, &success);
         if (success) {
@@ -590,7 +590,7 @@ pub const Lexer = struct {
             var buff: [128]u8 = undefined;
             buff[0] = start;
             const len = try self.readRawValue(&buff);
-            try parseRawValue(buff[0..len], val);
+            try lexRawValue(buff[0..len], val);
         }
     }
 };
