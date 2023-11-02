@@ -113,7 +113,7 @@ const Time = struct {
         const m = utils.parseDigits(u8, src[3..5]) catch return null;
         const s = utils.parseDigits(u8, src[6..8]) catch return null;
 
-        var ns: u32 = undefined;
+        var ns: u32 = 0;
 
         var offs: ?TimeOffset = null;
 
