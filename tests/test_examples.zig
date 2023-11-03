@@ -78,7 +78,14 @@ fn printTable(t: *const toml.TomlTable) void {
 pub fn main() !void {
     defer std.debug.assert(gpa_allocator.deinit() == .ok);
     const allocator = gpa_allocator.allocator();
-    var examples_dir = try fs.openIterableDirAbsolute("E:/Code/Zig/toml/examples", .{});
+    var path: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+
+    const cwd = try std.os.getcwd(&path);
+
+    const examples_path = try fs.path.join(allocator, &[2][]const u8{ cwd, "examples" });
+    defer allocator.free(examples_path);
+
+    var examples_dir = try fs.openIterableDirAbsolute(examples_path, .{});
     defer examples_dir.close();
     var walker = try examples_dir.walk(allocator);
     defer walker.deinit();
