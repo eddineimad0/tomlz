@@ -46,7 +46,7 @@ pub const Parser = struct {
             },
             .err_ctx = ErrorContext.init(allocator),
             .table_path = ArrayList([]const u8).init(allocator),
-            .root_table = TomlTable.init(allocator, false),
+            .root_table = TomlTable.init(allocator, false, false),
             // set when we start parsing.
             .active_table = undefined,
         };
@@ -100,7 +100,7 @@ pub const Parser = struct {
 
     /// Updates the active_table by walking
     /// the table_path.
-    fn walkTablePath(self: *Self) ParserError!void {
+    fn walkTablePath(self: *Self, is_table_header: bool) ParserError!void {
         for (self.table_path.items, 0..self.table_path.items.len) |*k, i| {
             errdefer {
                 // free all remaining keys.
@@ -113,16 +113,14 @@ pub const Parser = struct {
             if (self.checkKeyDup(k.*)) |v| {
                 switch (v.*) {
                     .Table => |*table| {
-                        if (table.implicit) {
-                            table.implicit = false;
-                            self.active_table = table;
-                        } else {
+                        if (table.is_inline) {
                             return self.err_ctx.reportError(
                                 ParserError.DupKey,
-                                defs.ERROR_DUP_KEY,
+                                defs.ERROR_DUP_TABLE,
                                 .{ self.__lex.line - 1, self.__lex.pos, k.* },
                             );
                         }
+                        self.active_table = table;
                     },
                     .TablesArray => |*a| {
                         self.active_table = a.ptrAtMut(a.size() - 1);
@@ -142,7 +140,7 @@ pub const Parser = struct {
                 // when deinitializing.
                 k.len = 0;
             } else {
-                self.active_table = try self.insertSubTable(k.*, true);
+                self.active_table = try self.insertSubTable(k.*, is_table_header);
             }
         }
         // Reset the arralist len so it can be reused
@@ -151,8 +149,8 @@ pub const Parser = struct {
 
     /// Inserts a subtable in the current active_table
     /// and return a pointer to it.
-    fn insertSubTable(self: *Self, key: []const u8, implicit: bool) ParserError!*TomlTable {
-        var value = types.Value{ .Table = TomlTable.init(self.allocator, implicit) };
+    fn insertSubTable(self: *Self, key: []const u8, is_implicit: bool) ParserError!*TomlTable {
+        var value = types.Value{ .Table = TomlTable.init(self.allocator, false, is_implicit) };
         errdefer value.Table.deinit();
         self.active_table.put(key, value) catch {
             return self.err_ctx.reportError(
@@ -267,7 +265,7 @@ pub const Parser = struct {
             },
             .IdentStart => try self.parsePrimitiveValue(t.c),
             .LBrace => { // inl_table
-                var tab = TomlTable.init(self.allocator, false);
+                var tab = TomlTable.init(self.allocator, true, false);
                 errdefer tab.deinit();
                 const currtab = self.active_table;
                 self.active_table = &tab;
@@ -353,7 +351,7 @@ pub const Parser = struct {
         // Reset when done.
         defer self.active_table = curr_tab;
 
-        try self.walkTablePath();
+        try self.walkTablePath(false);
         if (self.checkKeyDup(self.pair.key.items) != null) {
             return self.err_ctx.reportError(
                 ParserError.DupKey,
@@ -488,20 +486,20 @@ pub const Parser = struct {
             }
         }
 
-        try self.walkTablePath();
+        try self.walkTablePath(true);
 
         if (!is_arrytab) {
             if (self.checkKeyDup(self.pair.key.items)) |val| {
                 switch (val.*) {
                     .Table => |*tab| {
-                        if (!tab.implicit) {
+                        if (!tab.is_implicit) {
                             return self.err_ctx.reportError(
                                 ParserError.DupKey,
                                 defs.ERROR_DUP_TABLE,
                                 .{ self.__lex.line, self.__lex.pos, self.pair.key.items },
                             );
                         }
-                        tab.implicit = false;
+                        tab.is_implicit = false;
                         self.active_table = tab;
                         self.pair.key.clearRetainingCapacity();
                     },
@@ -522,7 +520,7 @@ pub const Parser = struct {
             if (self.checkKeyDup(self.pair.key.items)) |val| {
                 switch (val.*) {
                     .TablesArray => |*a| {
-                        try a.append(TomlTable.init(self.allocator, false));
+                        try a.append(TomlTable.init(self.allocator, false, false));
                         self.active_table = a.ptrAtMut(a.size() - 1);
                         self.pair.key.clearRetainingCapacity();
                     },
@@ -538,7 +536,7 @@ pub const Parser = struct {
                 const key = try self.pair.key.toOwnedSlice();
                 errdefer self.allocator.free(key);
                 var array = TomlArray(TomlTable).init(self.allocator);
-                try array.append(TomlTable.init(self.allocator, false));
+                try array.append(TomlTable.init(self.allocator, false, false));
                 try self.active_table.put(key, types.Value{ .TablesArray = array });
                 self.active_table = array.ptrAtMut(array.size() - 1);
             }
@@ -647,10 +645,9 @@ pub const Parser = struct {
                             .{},
                         );
                     };
-                    // self.__lex.nextToken(t);
                 },
                 .LBrace => {
-                    var tab = TomlTable.init(self.allocator, false);
+                    var tab = TomlTable.init(self.allocator, true, false);
                     errdefer tab.deinit();
                     const currtab = self.active_table;
                     self.active_table = &tab;
