@@ -1,5 +1,3 @@
-const std = @import("std");
-const bltin = @import("builtin");
 const err = @import("error.zig");
 const parser = @import("parser.zig");
 const types = @import("types.zig");
