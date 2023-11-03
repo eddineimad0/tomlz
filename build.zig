@@ -8,11 +8,10 @@ pub fn build(b: *std.Build) void {
         .source_file = .{ .path = "src/main.zig" },
     });
 
-    const test_step = b.step("test", "Compile tests");
+    const test_step = b.step("test", "Compile and run tests");
     const tests = [_][]const u8{
-        "test_examples",
+        "examples",
     };
-
     for (tests) |test_name| {
         const curr_test = b.addExecutable(.{
             .name = test_name,
@@ -22,7 +21,8 @@ pub fn build(b: *std.Build) void {
         });
         curr_test.addModule("toml", toml);
         const install_step = b.addInstallArtifact(curr_test, .{});
-        test_step.dependOn(&curr_test.step);
-        test_step.dependOn(&install_step.step);
+        const run_step = b.addRunArtifact(curr_test);
+        run_step.step.dependOn(&install_step.step);
+        test_step.dependOn(&run_step.step);
     }
 }
