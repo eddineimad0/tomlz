@@ -98,16 +98,20 @@ pub const Table = struct {
     table: StringHashMap(Value),
     // tracks how the table was defined:
     // true: implicitly defined through dotted keys,
-    // false: defined through [] in the root level,
-    // this is necessary to respect table defination rules.
-    implicit: bool,
+    // false: explicitly defined.
+    // e.g.: home.door.width = 5.75
+    // home and door are implicitly defined
+    // width is explicitly defined
+    is_implicit: bool,
+    is_inline: bool,
     const Self = @This();
     const Iterator = StringHashMap(Value).Iterator;
 
-    pub fn init(allocator: Allocator, implicit: bool) Self {
+    pub fn init(allocator: Allocator, is_inline: bool, is_implicit: bool) Self {
         return Self{
             .table = StringHashMap(Value).init(allocator),
-            .implicit = implicit,
+            .is_inline = is_inline,
+            .is_implicit = is_implicit,
         };
     }
 
