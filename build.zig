@@ -8,10 +8,10 @@ pub fn build(b: *std.Build) !void {
         .source_file = .{ .path = "src/main.zig" },
     });
 
-    const lib_fuzz_step = b.step("fuzz-lib", "fuzz static library with afl++ fuzzer.");
+    const lib_fuzz_step = b.step("fuzz", "build static library for fuzzing with afl++ fuzzer.");
     const fuzz_lib = b.addStaticLibrary(.{
         .name = "lib-fuzz-me",
-        .root_source_file = .{ .path = "fuzz/lib.zig" },
+        .root_source_file = .{ .path = "fuzz/fuzz.zig" },
         .target = target,
         .optimize = .Debug,
         .link_libc = true,
@@ -21,35 +21,6 @@ pub fn build(b: *std.Build) !void {
     fuzz_lib.addModule("tomlz", tomlz);
     const fuzz_lib_install = b.addInstallArtifact(fuzz_lib, .{});
     lib_fuzz_step.dependOn(&fuzz_lib_install.step);
-
-    // const fuzz_c_path = try std.fs.path.join(
-    //     b.allocator,
-    //     &.{ b.build_root.path.?, "fuzz", "fuzz_lib.c" },
-    // );
-    // const fuzz_obj_path = try std.fs.path.join(
-    //     b.allocator,
-    //     &.{ b.cache_root.path.?, "fuzz.o" },
-    // );
-    // const fuzz_lib_exe_path = try std.fs.path.join(
-    //     b.allocator,
-    //     &.{ b.build_root.path.?, "zig-out", "bin", "fuzz" },
-    // );
-    //
-    // const compile_cmd = b.addSystemCommand(&.{
-    //     "afl-clang-lto",
-    //     "-o",
-    //     fuzz_obj_path,
-    //     fuzz_c_path,
-    // });
-    // const link_cmd = b.addSystemCommand(&.{
-    //     "afl-clang-lto",
-    //     "-o",
-    //     fuzz_lib_exe_path,
-    //     fuzz_obj_path,
-    //     "-l",
-    // });
-    // link_cmd.step.dependOn(&compile_cmd.step);
-    // link_cmd.step.dependOn(&fuzz_lib_install.step);
 
     const test_step = b.step("test", "Compile and run tests");
     const tests = [_][]const u8{
