@@ -1,7 +1,7 @@
 const std = @import("std");
 const io = std.io;
 const fs = std.fs;
-const toml = @import("toml");
+const toml = @import("tomlz");
 var gpa_allocator = std.heap.GeneralPurposeAllocator(.{}){};
 
 fn parseTomlFile(f: fs.File) void {
