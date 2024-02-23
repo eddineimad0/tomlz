@@ -1,3 +1,3 @@
 fn main() {
-    println!("cargo:rustc-link-search=./zig-lib/");
+    println!("cargo:rustc-link-search=../../zig-out/lib/");
 }

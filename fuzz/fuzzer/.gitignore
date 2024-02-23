@@ -1,3 +1,2 @@
-./zig-lib
-./target
-./output
+target
+output
