@@ -2,7 +2,7 @@ const std = @import("std");
 const tomlz = @import("tomlz");
 
 // export the zig function so that it can be called from C
-fn fuzzTomlz(buffer: [*]const u8, size: usize) void {
+fn fuzzTomlz(buffer: [*]const u8, size: usize) callconv(.C) void {
     // Setup an allocator that will detect leaks/use-after-free/etc
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer std.debug.assert(gpa.deinit() == .ok);
