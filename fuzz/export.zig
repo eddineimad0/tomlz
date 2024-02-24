@@ -2,7 +2,7 @@ const std = @import("std");
 const tomlz = @import("tomlz");
 
 // export the zig function so that it can be called from C
-export fn fuzz_tomlz(buffer: [*]const u8, size: usize) void {
+export fn fuzzTomlz(buffer: [*]const u8, size: usize) callconv(.C) void {
     // Setup an allocator that will detect leaks/use-after-free/etc
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer std.debug.assert(gpa.deinit() == .ok);
@@ -17,4 +17,8 @@ export fn fuzz_tomlz(buffer: [*]const u8, size: usize) void {
     // Try to parse the data
     var parsed_table = parser.parse() catch unreachable; // compile in debug so we can crash.
     _ = parsed_table;
+}
+
+comptime {
+    @export(fuzzTomlz, .{ .name = "fuzz_tomlz", .linkage = .Strong });
 }
