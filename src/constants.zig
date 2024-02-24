@@ -1,8 +1,10 @@
 const b = @import("builtin");
+const build_options = @import("build_options");
+
 pub const IS_WINDOWS: bool = b.os.tag == .windows;
 pub const UTF8BOMLE: u24 = 0xBFBBEF;
 // Options,customize to your need
-pub const MAX_NESTTING_LEVEL = @as(u8, 8);
+pub const MAX_NESTTING_LEVEL = @as(u8, build_options.MAX_NESTTING_LEVEL);
 pub const INITAL_KEY_LEN = @as(u8, 128);
 pub const INITAL_STRING_LEN = @as(u16, 512);
 pub const INITAL_ERROR_BUFFER_LEN = @as(u16, 256);

@@ -1,13 +1,13 @@
 const std = @import("std");
+const types = @import("types.zig");
+const token = @import("token.zig");
+const defs = @import("constants.zig");
+const date_time = @import("date_time.zig");
 const io = std.io;
 const ascii = std.ascii;
 const fmt = std.fmt;
 const mem = std.mem;
 const debug = std.debug;
-const types = @import("types.zig");
-const token = @import("token.zig");
-const defs = @import("defs.zig");
-const date_time = @import("date_time.zig");
 const Token = token.Token;
 const TokenType = token.TokenType;
 const ParserError = @import("error.zig").ParserError;
@@ -602,7 +602,7 @@ pub const Lexer = struct {
             val.* = .{ .Boolean = b };
         } else {
             // An int,float or Date/timestamp
-            var buff: [128]u8 = undefined;
+            var buff: [256]u8 = undefined;
             buff[0] = start;
             const len = try self.readRawValue(&buff);
             try lexRawValue(buff[0..len], val);

@@ -1,6 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
-const defs = @import("defs.zig");
+const defs = @import("constants.zig");
 const fmt = std.fmt;
 const mem = std.mem;
 
