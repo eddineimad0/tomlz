@@ -42,21 +42,27 @@ pub fn build(b: *std.Build) !void {
     );
     lib_fuzz_step.dependOn(&fuzz_lib_install.step);
 
-    const test_step = b.step("test", "Compile and run tests");
-    const tests = [_][]const u8{
-        "examples",
-    };
-    for (tests) |test_name| {
-        const curr_test = b.addExecutable(.{
-            .name = test_name,
-            .root_source_file = .{ .path = b.fmt("tests/{s}.zig", .{test_name}) },
-            .target = target,
-            .optimize = optimize,
-        });
-        curr_test.addModule("tomlz", tomlz);
-        const test_install_step = b.addInstallArtifact(curr_test, .{});
-        const test_run_step = b.addRunArtifact(curr_test);
-        test_run_step.step.dependOn(&test_install_step.step);
-        test_step.dependOn(&test_run_step.step);
-    }
+    const run_step = b.step("run", "Compile and run examples");
+    const binary = b.addExecutable(.{
+        .name = "examples",
+        .root_source_file = .{ .path = "tests/examples.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    binary.addModule("tomlz", tomlz);
+    const examples_install_step = b.addInstallArtifact(binary, .{});
+    const examples_run_step = b.addRunArtifact(binary);
+    examples_run_step.step.dependOn(&examples_install_step.step);
+    run_step.dependOn(&examples_run_step.step);
+
+    const test_step = b.step("test", "Compile a binary to run against the toml test suite");
+    const curr_test = b.addExecutable(.{
+        .name = "test-parser",
+        .root_source_file = .{ .path = "tests/test-parser.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    curr_test.addModule("tomlz", tomlz);
+    const test_install_step = b.addInstallArtifact(curr_test, .{});
+    test_step.dependOn(&test_install_step.step);
 }
