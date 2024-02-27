@@ -437,7 +437,9 @@ pub const Lexer = struct {
                         },
                         'f' => c = 0x0C, // Form feed
                         'r' => c = '\r',
-                        '"', '\\' => {}, // No need to escape.
+                        '"', '\\' => {
+                            try str.append('\\');
+                        }, // No need to escape.
                         else => {
                             // What are you trying to escape.
                             return err.reportError(

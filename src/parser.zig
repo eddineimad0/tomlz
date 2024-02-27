@@ -30,7 +30,7 @@ pub const Parser = struct {
     // TOML allows quotted empty key.
     // To avoid collision we will use a sequence of bytes
     // forbidden by toml specification.
-    const BLANK_KEY = [5]u8{ 0x01, 0x02, 0x03, 0x04, 0x05 };
+    pub const BLANK_KEY = [5]u8{ 0x01, 0x02, 0x03, 0x04, 0x05 };
 
     /// Caller should deinit when done.
     /// # Parameters

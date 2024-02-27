@@ -94,7 +94,7 @@ const Date = struct {
 const TimeOffset = struct {
     // Suffix which denotes a UTC offset of 00:00
     z: bool,
-    // Optional offset between local time and UTC
+    // offset between local time and UTC
     minutes: i16,
 };
 

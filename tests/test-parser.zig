@@ -4,6 +4,7 @@ const tomlz = @import("tomlz");
 const os = std.os;
 const io = std.io;
 const json = std.json;
+const fmt = std.fmt;
 
 pub fn main() void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -64,7 +65,11 @@ fn jsonStringifyTable(t: *const tomlz.TomlTable, wr: *std.ArrayList(u8).Writer) 
         } else {
             first = false;
         }
-        wr.print("\t\"{s}\": ", .{e.key_ptr.*}) catch return error.JsonStringifyError;
+        if (std.mem.eql(u8, e.key_ptr.*, &tomlz.Parser.BLANK_KEY)) {
+            wr.print("\t\"\": ", .{}) catch return error.JsonStringifyError;
+        } else {
+            wr.print("\t\"{s}\": ", .{e.key_ptr.*}) catch return error.JsonStringifyError;
+        }
         switch (e.value_ptr.*) {
             .Array => |*a| {
                 jsonStringifyArray(a, wr) catch return error.JsonStringifyError;
@@ -73,7 +78,7 @@ fn jsonStringifyTable(t: *const tomlz.TomlTable, wr: *std.ArrayList(u8).Writer) 
                 jsonStringifyTable(table, wr) catch return error.JsonStringifyError;
             },
             .TablesArray => |*a| {
-                _ = a;
+                jsonStringifyArrayTable(a, wr) catch return error.JsonStringifyError;
             },
             else => jsonStringifyValue(e.value_ptr.*, wr) catch return error.JsonStringifyError,
         }
@@ -82,7 +87,20 @@ fn jsonStringifyTable(t: *const tomlz.TomlTable, wr: *std.ArrayList(u8).Writer) 
     _ = wr.write("}\n") catch return error.JsonStringifyError;
 }
 
-pub fn jsonStringifyArray(a: *const tomlz.TomlArray, wr: *std.ArrayList(u8).Writer) !void {
+fn jsonStringifyArrayTable(a: *const tomlz.TomlTableArray, wr: *std.ArrayList(u8).Writer) !void {
+    _ = try wr.write("[\n");
+    for (0..a.size()) |i| {
+        if (i > 0) {
+            _ = try wr.write(",\n");
+        }
+        const table = a.ptrAt(i);
+        try jsonStringifyTable(table, wr);
+    }
+    _ = try wr.write("\n");
+    _ = try wr.write("]");
+}
+
+fn jsonStringifyArray(a: *const tomlz.TomlArray, wr: *std.ArrayList(u8).Writer) !void {
     _ = try wr.write("[\n");
     for (0..a.size()) |i| {
         if (i > 0) {
@@ -103,7 +121,7 @@ pub fn jsonStringifyArray(a: *const tomlz.TomlArray, wr: *std.ArrayList(u8).Writ
     _ = try wr.write("]");
 }
 
-pub fn jsonStringifyValue(v: anytype, wr: *std.ArrayList(u8).Writer) !void {
+fn jsonStringifyValue(v: anytype, wr: *std.ArrayList(u8).Writer) !void {
     switch (v) {
         .String => |slice| try wr.print(
             "{{\n\t\"type\": \"string\",\n\t\"value\": \"{s}\"\n}}",
@@ -121,7 +139,82 @@ pub fn jsonStringifyValue(v: anytype, wr: *std.ArrayList(u8).Writer) !void {
             "{{\n\t\"type\": \"float\",\n\t\"value\": \"{d}\"\n}}",
             .{f},
         ),
-        .DateTime => |*ts| _ = ts,
+        .DateTime => |*ts| {
+            var value_type: [*:0]const u8 = "";
+            var time_buffer: [256]u8 = undefined;
+            var offset_buffer: [128]u8 = undefined;
+            var offset: []u8 = undefined;
+            var value_string: []u8 = undefined;
+            if (ts.date != null and ts.time != null) {
+                value_type = "datetime";
+                if (ts.time.?.offset != null) {
+                    if (ts.time.?.offset.?.z) {
+                        offset = try fmt.bufPrint(&offset_buffer, "Z", .{});
+                    } else {
+                        offset = try fmt.bufPrint(
+                            &offset_buffer,
+                            "{d}",
+                            .{ts.time.?.offset.?.minutes},
+                        );
+                    }
+                } else {
+                    offset = try fmt.bufPrint(&offset_buffer, "", .{});
+                }
+                value_string = try fmt.bufPrint(
+                    &time_buffer,
+                    "{d}-{d}-{d}T{d}:{d}:{d}{s}",
+                    .{
+                        ts.date.?.year,
+                        ts.date.?.month,
+                        ts.date.?.day,
+                        ts.time.?.hour,
+                        ts.time.?.minute,
+                        ts.time.?.second,
+                        offset,
+                    },
+                );
+            } else if (ts.date != null) {
+                value_type = "date-local";
+                value_string = try fmt.bufPrint(
+                    &time_buffer,
+                    "{d}-{d}-{d}",
+                    .{
+                        ts.date.?.year,
+                        ts.date.?.month,
+                        ts.date.?.day,
+                    },
+                );
+            } else if (ts.time != null) {
+                value_type = "time-local";
+                if (ts.time.?.offset != null) {
+                    if (ts.time.?.offset.?.z) {
+                        offset = try fmt.bufPrint(&offset_buffer, "Z", .{});
+                    } else {
+                        offset = try fmt.bufPrint(
+                            &offset_buffer,
+                            "{d}",
+                            .{ts.time.?.offset.?.minutes},
+                        );
+                    }
+                } else {
+                    offset = try fmt.bufPrint(&offset_buffer, "", .{});
+                }
+                value_string = try fmt.bufPrint(
+                    &time_buffer,
+                    "{d}:{d}:{d}{s}",
+                    .{
+                        ts.time.?.hour,
+                        ts.time.?.minute,
+                        ts.time.?.second,
+                        offset,
+                    },
+                );
+            }
+            try wr.print(
+                "{{\n\t\"type\": \"{s}\",\n\t\"value\": \"{s}\"\n}}",
+                .{ value_type, value_string },
+            );
+        },
         else => return error.UnknownTomlValue,
     }
 }
