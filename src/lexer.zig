@@ -67,9 +67,10 @@ pub const Lexer = struct {
     /// Advances in the buffer until an end of line character ('\n') is found,
     /// if it reaches the end of the stream before finding the newline
     /// it returns false, otherwise true,
-    pub fn toNextLine(self: *Self) bool {
+    pub fn toNextLine(self: *Self, bytes_read: *usize) bool {
         var b: u8 = undefined;
         while (self.nextByte(&b)) {
+            bytes_read.* += 1;
             if (b == '\n') {
                 return true;
             }
@@ -95,17 +96,19 @@ pub const Lexer = struct {
     pub fn nextToken(
         self: *Self,
         out: *Token,
-    ) void {
+    ) usize {
+        var bytes_read: usize = 0;
         while (self.nextByte(&out.c)) {
+            bytes_read += 1;
             if (out.c == '#') {
                 // skip until the next line.
-                if (!self.toNextLine()) {
+                if (!self.toNextLine(&bytes_read)) {
                     // Reporte the end of stream.
                     out.setContext(TokenType.EOS, self.pos, self.line);
-                    return;
+                    return bytes_read;
                 }
                 out.setContext(TokenType.EOL, self.pos, self.line);
-                return;
+                return bytes_read;
             }
             if (out.c == ' ' or out.c == '\t' or out.c == '\r') {
                 // Whitespace means tab (0x09) or space (0x20)
@@ -127,9 +130,10 @@ pub const Lexer = struct {
                     out.setContext(TokenType.IdentStart, self.pos, self.line);
                 },
             }
-            return;
+            return bytes_read;
         }
         out.setContext(TokenType.EOS, self.pos, self.line);
+        return bytes_read;
     }
 
     pub fn nextBareKey(

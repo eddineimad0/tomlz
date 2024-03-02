@@ -5,9 +5,9 @@ const os = std.os;
 const io = std.io;
 const json = std.json;
 const fmt = std.fmt;
+var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
 pub fn main() void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer std.debug.assert(gpa.deinit() == .ok);
     const allocator = gpa.allocator();
 
@@ -40,7 +40,6 @@ pub fn main() void {
         os.exit(1);
     };
 
-    // TODO: the test suite expects json output.
     os.exit(0);
 }
 
@@ -146,10 +145,11 @@ fn jsonStringifyValue(v: anytype, wr: *std.ArrayList(u8).Writer) !void {
             var offset: []u8 = undefined;
             var value_string: []u8 = undefined;
             if (ts.date != null and ts.time != null) {
-                value_type = "datetime";
+                value_type = "datetime-local";
                 if (ts.time.?.offset != null) {
                     if (ts.time.?.offset.?.z) {
                         offset = try fmt.bufPrint(&offset_buffer, "Z", .{});
+                        value_type = "datetime";
                     } else {
                         offset = try fmt.bufPrint(
                             &offset_buffer,
@@ -216,5 +216,13 @@ fn jsonStringifyValue(v: anytype, wr: *std.ArrayList(u8).Writer) !void {
             );
         },
         else => return error.UnknownTomlValue,
+    }
+}
+
+test "reandom" {
+    var c: u8 = ' ';
+    if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '-') {
+        // rewind and exit.
+        std.debug.print("Space unallowed\n", .{});
     }
 }

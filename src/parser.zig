@@ -189,7 +189,7 @@ pub const Parser = struct {
         // Read until end of stream.
         var token: Token = undefined;
         while (true) {
-            self.__lex.nextToken(&token);
+            _ = self.__lex.nextToken(&token);
             switch (token.cntxt.type) {
                 .EOS => break,
                 .EOL => continue,
@@ -198,7 +198,7 @@ pub const Parser = struct {
                 },
                 .IdentStart, .String => {
                     try self.parseKeyValue(&token);
-                    self.__lex.nextToken(&token);
+                    _ = self.__lex.nextToken(&token);
                     if (token.cntxt.type != .EOL) {
                         return self.err_ctx.reportError(
                             ParserError.BadSyntax,
@@ -241,6 +241,7 @@ pub const Parser = struct {
             }
             // If the key is empty ""
             if (self.pair.key.items.len == 0) {
+                // TODO: should we use an empty string instead.
                 _ = try self.pair.key.writer().write(&Parser.BLANK_KEY);
             }
         } else {
@@ -304,7 +305,7 @@ pub const Parser = struct {
                     else => return erro,
                 }
             };
-            self.__lex.nextToken(t);
+            _ = self.__lex.nextToken(t);
             // Decision
             switch (t.cntxt.type) {
                 .Equal => break,
@@ -318,7 +319,7 @@ pub const Parser = struct {
                     };
                     errdefer self.allocator.free(key);
                     try self.appendToTablePath(key);
-                    self.__lex.nextToken(t);
+                    _ = self.__lex.nextToken(t);
                     if (t.cntxt.type != .IdentStart and t.cntxt.type != .String) {
                         return self.err_ctx.reportError(
                             ParserError.BadSyntax,
@@ -370,7 +371,7 @@ pub const Parser = struct {
 
         errdefer self.allocator.free(key);
 
-        self.__lex.nextToken(t);
+        _ = self.__lex.nextToken(t);
         try self.parseValue(t);
 
         errdefer types.freeValue(&self.pair.val, self.allocator);
@@ -415,19 +416,35 @@ pub const Parser = struct {
     /// Parse the next Table header.
     fn parseTableHeader(self: *Self, t: *Token) !void {
         self.active_table = &self.root_table;
-        var is_arrytab = false;
-        self.__lex.nextToken(t);
+        var bytes_read = self.__lex.nextToken(t);
+        var is_tab_array = false;
+        if (t.cntxt.type == .LBracket) {
+            if (bytes_read > 1) {
+                // some whitespace was encountred
+                return self.err_ctx.reportError(
+                    ParserError.BadSyntax,
+                    defs.ERROR_BAD_SYNTAX,
+                    .{
+                        t.cntxt.line,
+                        t.cntxt.pos,
+                        "Found whitespace between Array of tables Bracket.",
+                    },
+                );
+            }
+            is_tab_array = true;
+            _ = self.__lex.nextToken(t);
+        }
         while (t.cntxt.type != .RBracket) {
             switch (t.cntxt.type) {
                 .IdentStart, .String => {
                     try self.parseKey(t);
-                    self.__lex.nextToken(t);
+                    _ = self.__lex.nextToken(t);
                     // Decision.
                     if (t.cntxt.type == .Dot) {
                         const key = try self.pair.key.toOwnedSlice();
                         errdefer self.allocator.free(key);
                         try self.appendToTablePath(key);
-                        self.__lex.nextToken(t);
+                        _ = self.__lex.nextToken(t);
                         if (t.cntxt.type != .IdentStart and t.cntxt.type != .String) {
                             return self.err_ctx.reportError(
                                 ParserError.BadSyntax,
@@ -439,23 +456,18 @@ pub const Parser = struct {
                                 },
                             );
                         }
-                    }
-                },
-                .LBracket => {
-                    if (!is_arrytab) {
-                        is_arrytab = true;
-                    } else {
+                    } else if (t.cntxt.type != .RBracket) {
+                        // Invalid syntax.
                         return self.err_ctx.reportError(
                             ParserError.BadSyntax,
                             defs.ERROR_BAD_SYNTAX,
                             .{
                                 t.cntxt.line,
                                 t.cntxt.pos,
-                                "Expected a key found '['",
+                                "Expected `]` after table name",
                             },
                         );
                     }
-                    self.__lex.nextToken(t);
                 },
                 else => {
                     return self.err_ctx.reportError(
@@ -471,9 +483,9 @@ pub const Parser = struct {
             }
         }
 
-        if (is_arrytab) {
-            self.__lex.nextToken(t);
-            if (t.cntxt.type != .RBracket) {
+        if (is_tab_array) {
+            bytes_read = self.__lex.nextToken(t);
+            if (t.cntxt.type != .RBracket or bytes_read > 1) {
                 return self.err_ctx.reportError(
                     ParserError.BadSyntax,
                     defs.ERROR_BAD_SYNTAX,
@@ -486,9 +498,22 @@ pub const Parser = struct {
             }
         }
 
+        if (self.pair.key.items.len == 0) {
+            // [[]] or [] : empty table header not allowed.
+            return self.err_ctx.reportError(
+                ParserError.BadSyntax,
+                defs.ERROR_BAD_SYNTAX,
+                .{
+                    t.cntxt.line,
+                    t.cntxt.pos,
+                    "Expected an identifier for the between header breacket",
+                },
+            );
+        }
+
         try self.walkTablePath(true);
 
-        if (!is_arrytab) {
+        if (!is_tab_array) {
             if (self.checkKeyDup(self.pair.key.items)) |val| {
                 switch (val.*) {
                     .Table => |*tab| {
@@ -541,7 +566,7 @@ pub const Parser = struct {
                 self.active_table = array.ptrAtMut(array.size() - 1);
             }
         }
-        self.__lex.nextToken(t);
+        _ = self.__lex.nextToken(t);
         if (t.cntxt.type != .EOL) {
             return self.err_ctx.reportError(
                 ParserError.BadSyntax,
@@ -556,7 +581,7 @@ pub const Parser = struct {
     }
 
     fn parseInlineTable(self: *Self, t: *Token) ParserError!void {
-        self.__lex.nextToken(t);
+        _ = self.__lex.nextToken(t);
         while (true) {
             switch (t.cntxt.type) {
                 .EOS => {
@@ -587,10 +612,10 @@ pub const Parser = struct {
                 },
                 .IdentStart, .String => {
                     try self.parseKeyValue(t);
-                    self.__lex.nextToken(t);
+                    _ = self.__lex.nextToken(t);
                 },
                 .Comma => {
-                    self.__lex.nextToken(t);
+                    _ = self.__lex.nextToken(t);
                     if (t.cntxt.type != .String and t.cntxt.type != .IdentStart) {
                         return self.err_ctx.reportError(
                             ParserError.BadSyntax,
@@ -616,7 +641,7 @@ pub const Parser = struct {
 
     fn parseArry(self: *Self, arry: *TomlArray(types.Value), t: *Token) ParserError!void {
         while (true) {
-            self.__lex.nextToken(t);
+            _ = self.__lex.nextToken(t);
             switch (t.cntxt.type) {
                 .EOS => {
                     return self.err_ctx.reportError(
@@ -629,9 +654,7 @@ pub const Parser = struct {
                         },
                     );
                 },
-                .EOL, .Comma => {
-                    // self.__lex.nextToken(t);
-                },
+                .EOL, .Comma => {},
                 .RBracket => {
                     // DONE.
                     break;
