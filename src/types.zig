@@ -1,11 +1,16 @@
 const std = @import("std");
 const date_time = @import("date_time.zig");
+const json = std.json;
 const ArrayList = std.ArrayList;
 const StringHashMap = std.StringHashMap;
 const Allocator = std.mem.Allocator;
 
 // TOML values
 // https://toml.io/en/v1.0.0#keyvalue-pair
+pub const Key = ArrayList(u8);
+
+pub const String = ArrayList(u8);
+
 pub const ValueType = enum {
     Integer,
     Float,
@@ -28,7 +33,7 @@ pub const Value = union(ValueType) {
     DateTime: date_time.DateTime,
 };
 
-pub fn freeValue(v: *Value, allocator: Allocator) void {
+pub fn freeValue(allocator: Allocator, v: *Value) void {
     switch (v.*) {
         .String => |slice| allocator.free(slice),
         .Array => |*a| {
@@ -44,6 +49,7 @@ pub fn freeValue(v: *Value, allocator: Allocator) void {
     }
 }
 
+/// Usefull warper around std.ArrayList
 pub fn Array(comptime T: type) type {
     return struct {
         array: ArrayList(T),
@@ -65,15 +71,15 @@ pub fn Array(comptime T: type) type {
         pub inline fn clear(self: *Self) void {
             if (T == Value) {
                 const allocator = self.array.allocator;
-                for (self.array.items) |*val| {
-                    freeValue(val, allocator);
+                for (self.array.items) |*value| {
+                    freeValue(allocator, value);
                 }
             } else if (T == Table) {
                 for (self.array.items) |*tab| {
                     tab.deinit();
                 }
             } else {
-                @compileError("Generic Toml Array: T can only be Value or Table");
+                @compileError("Generic Toml Array(T): T can only be Value or Table");
             }
         }
 
@@ -85,15 +91,16 @@ pub fn Array(comptime T: type) type {
             return self.array.items.len;
         }
 
-        pub inline fn ptrAt(self: *const Self, index: usize) *const T {
+        pub inline fn get(self: *const Self, index: usize) *const T {
             return &self.array.items[index];
         }
 
-        pub inline fn ptrAtMut(self: *Self, index: usize) *T {
+        pub inline fn getMut(self: *Self, index: usize) *T {
             return &self.array.items[index];
         }
     };
 }
+
 pub const Table = struct {
     table: StringHashMap(Value),
     // tracks how the table was defined:
@@ -126,7 +133,7 @@ pub const Table = struct {
         var it = self.table.iterator();
         while (it.next()) |e| {
             allocator.free(e.key_ptr.*);
-            freeValue(e.value_ptr, allocator);
+            freeValue(allocator, e.value_ptr);
         }
     }
 
@@ -138,7 +145,7 @@ pub const Table = struct {
         return self.table.getPtr(key);
     }
 
-    pub inline fn get_mut(self: *Self, key: []const u8) ?*Value {
+    pub inline fn getMut(self: *Self, key: []const u8) ?*Value {
         return self.table.getPtr(key);
     }
 
@@ -146,6 +153,3 @@ pub const Table = struct {
         return self.table.iterator();
     }
 };
-
-pub const Key = ArrayList(u8);
-pub const String = ArrayList(u8);

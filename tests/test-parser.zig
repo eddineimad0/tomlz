@@ -64,11 +64,7 @@ fn jsonStringifyTable(t: *const tomlz.TomlTable, wr: *std.ArrayList(u8).Writer) 
         } else {
             first = false;
         }
-        if (std.mem.eql(u8, e.key_ptr.*, &tomlz.Parser.BLANK_KEY)) {
-            wr.print("\t\"\": ", .{}) catch return error.JsonStringifyError;
-        } else {
-            wr.print("\t\"{s}\": ", .{e.key_ptr.*}) catch return error.JsonStringifyError;
-        }
+        wr.print("\t\"{s}\": ", .{e.key_ptr.*}) catch return error.JsonStringifyError;
         switch (e.value_ptr.*) {
             .Array => |*a| {
                 jsonStringifyArray(a, wr) catch return error.JsonStringifyError;
@@ -92,7 +88,7 @@ fn jsonStringifyArrayTable(a: *const tomlz.TomlTableArray, wr: *std.ArrayList(u8
         if (i > 0) {
             _ = try wr.write(",\n");
         }
-        const table = a.ptrAt(i);
+        const table = a.get(i);
         try jsonStringifyTable(table, wr);
     }
     _ = try wr.write("\n");
@@ -105,7 +101,7 @@ fn jsonStringifyArray(a: *const tomlz.TomlArray, wr: *std.ArrayList(u8).Writer) 
         if (i > 0) {
             _ = try wr.write(",\n");
         }
-        const value = a.ptrAt(i);
+        const value = a.get(i);
         switch (value.*) {
             .Table => |*table| {
                 jsonStringifyTable(table, wr) catch return error.JsonStringifyError;

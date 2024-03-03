@@ -123,7 +123,7 @@ pub const Parser = struct {
                         self.active_table = table;
                     },
                     .TablesArray => |*a| {
-                        self.active_table = a.ptrAtMut(a.size() - 1);
+                        self.active_table = a.getMut(a.size() - 1);
                     },
                     else => {
                         return self.err_ctx.reportError(
@@ -159,12 +159,12 @@ pub const Parser = struct {
                 .{},
             );
         };
-        return &self.active_table.get_mut(key).?.Table;
+        return &self.active_table.getMut(key).?.Table;
     }
 
     /// Checks if the current key is a duplicate in the active_table.
     inline fn checkKeyDup(self: *Self, key: []const u8) ?*types.Value {
-        return self.active_table.get_mut(key);
+        return self.active_table.getMut(key);
     }
 
     /// Parse the stream and return a poniter to
@@ -238,11 +238,6 @@ pub const Parser = struct {
                 '\'' => try self.__lex.nextStringSQ(&self.pair.key, &self.err_ctx, true),
                 '"' => try self.__lex.nextStringDQ(&self.pair.key, &self.err_ctx, true),
                 else => unreachable,
-            }
-            // If the key is empty ""
-            if (self.pair.key.items.len == 0) {
-                // TODO: should we use an empty string instead.
-                _ = try self.pair.key.writer().write(&Parser.BLANK_KEY);
             }
         } else {
             try self.pair.key.append(t.c);
@@ -374,7 +369,7 @@ pub const Parser = struct {
         _ = self.__lex.nextToken(t);
         try self.parseValue(t);
 
-        errdefer types.freeValue(&self.pair.val, self.allocator);
+        errdefer types.freeValue(self.allocator, &self.pair.val);
         self.active_table.put(key, self.pair.val) catch {
             return self.err_ctx.reportError(
                 ParserError.OutOfMemory,
@@ -546,7 +541,7 @@ pub const Parser = struct {
                 switch (val.*) {
                     .TablesArray => |*a| {
                         try a.append(TomlTable.init(self.allocator, false, false));
-                        self.active_table = a.ptrAtMut(a.size() - 1);
+                        self.active_table = a.getMut(a.size() - 1);
                         self.pair.key.clearRetainingCapacity();
                     },
                     else => {
@@ -563,7 +558,7 @@ pub const Parser = struct {
                 var array = TomlArray(TomlTable).init(self.allocator);
                 try array.append(TomlTable.init(self.allocator, false, false));
                 try self.active_table.put(key, types.Value{ .TablesArray = array });
-                self.active_table = array.ptrAtMut(array.size() - 1);
+                self.active_table = array.getMut(array.size() - 1);
             }
         }
         _ = self.__lex.nextToken(t);

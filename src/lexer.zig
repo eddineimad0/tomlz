@@ -319,7 +319,7 @@ pub const Lexer = struct {
             // A newline immediately following the opening delimiter will be trimmed.
             self.trimNewLine();
         } else {
-            try str.append(c);
+            self.toLastByte();
         }
 
         while (self.nextByte(&c)) {
@@ -387,8 +387,13 @@ pub const Lexer = struct {
                             // Skip until the next non-whitespace char.
                             while (self.nextByte(&c)) {
                                 switch (c) {
-                                    ' ', '\t', '\r', '\n' => continue,
-                                    else => break,
+                                    ' ', '\t', '\r' => continue,
+                                    '\n' => break,
+                                    else => return err.reportError(
+                                        ParserError.BadStringEscSeq,
+                                        defs.ERROR_STRING_BAD_ESC,
+                                        .{ self.line, self.pos },
+                                    ),
                                 }
                             }
 
