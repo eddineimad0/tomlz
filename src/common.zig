@@ -7,6 +7,7 @@ const fmt = std.fmt;
 pub const Allocator = std.mem.Allocator;
 pub const String8 = std.ArrayList(u8);
 
+/// Holds necessary informations about a position in the stream.
 pub const Position = struct {
     line: usize, // The line number in the current stream.
     offset: usize, // Byte offset into the line

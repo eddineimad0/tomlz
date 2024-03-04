@@ -18,15 +18,31 @@ pub const TokenType = enum {
     ArrayTableEnd,
     InlineTableStart,
     InlineTableEnd,
-    CommentStart,
+    Comment,
     String,
     MultilineString,
+    Error,
 };
 
 pub const Token = struct {
     type: TokenType,
-    value: []const u8,
-    pos: common.Position,
+    value: ?[]const u8,
+    start_pos: common.Position,
+    end_pos: common.Position,
+
+    const Self = @This();
+
+    pub inline fn setStartPosition(self: *Self, pos: *const common.Position) void {
+        @memcpy(&self.start_pos, &pos);
+    }
+
+    pub inline fn setEndPosition(self: *Self, pos: *const common.Position) void {
+        @memcpy(&self.end_pos, &pos);
+    }
+};
+
+const LexerState = enum {
+    LexRoot,
 };
 
 const Lexer = struct {
@@ -34,21 +50,23 @@ const Lexer = struct {
     index: usize, // current read index into the input.
     pos: common.Position,
     prev_pos: common.Position,
+    cntxt: struct {
+        state: LexerState,
+        state_func: LexFuncPtr,
+    },
 
     const Self = @This();
-
-    pub fn init(input: io.StreamSource) Self {
-        return Self{
-            .input = input,
-            .index = 0,
-            .prev_pos = .{ .line = 1, .offset = 0 },
-            .pos = .{ .line = 1, .offset = 0 },
-        };
-    }
+    const LexFuncPtr = *const fn (self: *Self, t: *Token) void;
+    const EOF: u8 = 0;
 
     // pub fn deinit(self:*Self)void{
     // }
-    //
+
+    inline fn updateState(self: *Self, s: LexerState, f: LexFuncPtr) void {
+        self.cntxt.state = s;
+        self.cntxt.state_func = f;
+    }
+
     inline fn updatePrevPosition(self: *Self) void {
         @memcpy(&self.prev_pos, &self.pos);
     }
@@ -62,9 +80,12 @@ const Lexer = struct {
     fn nextByte(self: *Self) u8 {
         const r = self.input.reader();
         const b = r.readByte() catch {
-            return 0;
+            return EOF;
         };
-        // TODO: handle control characters.
+        if (common.isControl(b)) {
+            // TODO: error message.
+            return 0;
+        }
         self.index += 1;
         self.updatePrevByte(b);
         if (b == '\n') {
@@ -92,7 +113,7 @@ const Lexer = struct {
 
     /// consume the next byte only if it is equal to the `predicate`
     /// otherwise it does nothing.
-    fn consumeOrRewind(self: *Self, predicate: u8) bool {
+    fn consume(self: *Self, predicate: u8) bool {
         if (self.nextByte() == predicate) {
             return true;
         } else {
@@ -101,27 +122,77 @@ const Lexer = struct {
         }
     }
 
-    fn lexRoot(self: *Self) void {
+    /// Reads ahead in the stream and ignore any byte in `bytes_to_skip`.
+    fn skipBytes(self: *Self, bytes_to_skip: []const u8) void {
+        while (true) {
+            const b = self.nextByte();
+            var skip = false;
+            for (bytes_to_skip) |predicate| {
+                skip = (b == predicate);
+            }
+
+            if (!skip) {
+                break;
+            }
+        }
+        self.toLastByte();
+    }
+
+    fn lexRoot(self: *Self, t: *Token) void {
         const b = self.nextByte();
         if (common.isWhiteSpace(b) or common.isNewLine(b)) {
-            // Skip.
+            self.skipBytes(&[_]u8{ '\n', '\r', '\t', ' ' });
+            self.lexRoot(t);
         }
         switch (b) {
-            0 => {},
-            '#' => self.lexComment(),
+            EOF => {
+                t.setStartPosition(self.pos);
+                t.setEndPosition(self.pos);
+                t.type = .EOF;
+                t.value = null;
+            },
+            '#' => {
+                t.setStartPosition(&self.prev_pos);
+                self.lexComment(t);
+            },
             else => {
                 // probably a key
                 self.toLastByte();
-                self.lexKey();
+                self.lexKey(t);
             },
         }
     }
 
-    fn lexComment(self: *Self) void {
+    /// Lexes an entire comment up to the newline character.
+    /// the token value is not populated by the comment text,
+    /// but rather set to null.
+    fn lexComment(self: *Self, t: *Token) void {
+        while (true) {
+            const b = self.nextByte();
+            if (common.isNewLine(b) or b == EOF) {
+                break;
+            }
+        }
+        t.setEndPosition(&self.prev_pos);
+        t.type = .Comment;
+        t.value = null;
+    }
+
+    fn lexKey(self: *Self, t: *Token) void {
+        _ = t;
         _ = self;
     }
 
-    fn lexKey(self: *Self) void {
-        _ = self;
+    pub fn init(input: io.StreamSource) Self {
+        return Self{
+            .input = input,
+            .index = 0,
+            .prev_pos = .{ .line = 1, .offset = 0 },
+            .pos = .{ .line = 1, .offset = 0 },
+            .cntxt = .{ .state = .LexRoot, .state_func = lexRoot },
+        };
+    }
+    pub fn nextToken(self: *Self, t: *Token) void {
+        self.cntxt.state_func(self, t);
     }
 };
