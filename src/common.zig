@@ -36,3 +36,7 @@ pub inline fn isWhiteSpace(byte: u8) bool {
 pub inline fn isNewLine(byte: u8) bool {
     return (byte == '\n' or byte == '\r');
 }
+
+pub inline fn isBareKeyChar(c: u8) bool {
+    return (ascii.isAlphanumeric(c) or c == '-' or c == '_');
+}
