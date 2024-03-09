@@ -80,6 +80,9 @@ pub const Parser = struct {
                 .Key => {
                     debug.print("[{d},{d}]Tok:Key, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
                 },
+                .BasicString => {
+                    debug.print("[{d},{d}]Tok:BasicString, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
+                },
                 else => {},
             }
         }
@@ -88,7 +91,10 @@ pub const Parser = struct {
 
 test "temp" {
     const testing = std.testing;
-    const src = "# This is A Comment";
+    const src =
+        \\ # This is a comment
+        \\ my_string = "Hello world!"
+    ;
     var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
 
     var p = try Parser.init(testing.allocator, &ss);
