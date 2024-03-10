@@ -23,6 +23,9 @@ pub const TokenType = enum {
     InlineTableEnd,
     Comment,
     BasicString,
+    LitteralString,
+    MultiLineBasicString,
+    MultiLineLitteralString,
     MultilineString,
     Error,
     Key,
@@ -45,6 +48,7 @@ pub const Lexer = struct {
     index: usize, // current read index into the input.
     position: common.Position,
     prev_position: common.Position,
+    // BUG: the value doesn't chage or update.
     lex_start: common.Position, // position from where we started lexing the current token.
     token_buffer: common.String8,
     state_func_stack: Stack(?LexFuncPtr),
@@ -322,8 +326,28 @@ pub const Lexer = struct {
         switch (b) {
             '[' => {},
             '{' => {},
-            '"' => self.pushStateOrStop(lexBasicString, t),
-            '\'' => {},
+            '"' => {
+                if (self.consumeByte('"')) {
+                    if (self.consumeByte('"')) {
+                        self.pushStateOrStop(lexMultiLineBasicString, t);
+                        return;
+                    } else {
+                        self.toLastByte();
+                    }
+                }
+                self.pushStateOrStop(lexBasicString, t);
+            },
+            '\'' => {
+                if (self.consumeByte('\'')) {
+                    if (self.consumeByte('\'')) {
+                        self.pushStateOrStop(lexMultiLineLitteralString, t);
+                        return;
+                    } else {
+                        self.toLastByte();
+                    }
+                }
+                self.pushStateOrStop(lexLitteralString, t);
+            },
             '-', '+' => {},
             else => {},
         }
@@ -362,6 +386,156 @@ pub const Lexer = struct {
         self.emit(t, .BasicString, self.token_buffer.items, &self.lex_start);
     }
 
+    fn lexMultiLineBasicString(self: *Self, t: *Token) void {
+        while (true) {
+            const b = self.nextByte() catch {
+                const err_msg = self.formatError(
+                    "Lexer: reached end of stream before multi-line string delimiter \"\"\" ",
+                    .{},
+                );
+                self.emit(t, .Error, err_msg, &self.lex_start);
+                return;
+            };
+            switch (b) {
+                '"' => {
+                    if (self.consumeByte('"')) {
+                        if (self.consumeByte('"')) {
+                            // there are some edge cases where a multi line string
+                            // could be written as: """Hello World"""""
+                            // allowing for 5 '"' at the end.
+                            var counter: i8 = 2;
+                            while (counter > 0) {
+                                const c = self.peekByte() catch break;
+                                if (c != '"') {
+                                    break;
+                                }
+                                self.token_buffer.append(c) catch {
+                                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                                    return;
+                                };
+                                _ = self.nextByte() catch unreachable;
+                                counter -= 1;
+                            }
+                            break;
+                        } else {
+                            self.toLastByte();
+                        }
+                    }
+                },
+                '\\' => self.lexMultiLineStringEscape(t) catch return,
+                else => self.token_buffer.append(b) catch {
+                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                    return;
+                },
+            }
+        }
+        const current = self.popState();
+        assert(current == lexMultiLineBasicString);
+        self.emit(t, .MultiLineBasicString, self.token_buffer.items, &self.lex_start);
+    }
+
+    /// lex the string content between it's delimiters `'`.
+    fn lexLitteralString(self: *Self, t: *Token) void {
+        while (true) {
+            const b = self.nextByte() catch {
+                const err_msg = self.formatError(
+                    "Lexer: reached end of stream before string delimiter ' ",
+                    .{},
+                );
+                self.emit(t, .Error, err_msg, &self.lex_start);
+                return;
+            };
+            if (common.isNewLine(b)) {
+                const err_msg = self.formatError(
+                    "Lexer: litteral string can't contain a newline character 0x{X:0>2}",
+                    .{b},
+                );
+                self.emit(t, .Error, err_msg, &self.lex_start);
+                return;
+            }
+            switch (b) {
+                '\'' => break,
+                else => self.token_buffer.append(b) catch {
+                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                    return;
+                },
+            }
+        }
+        const current = self.popState();
+        assert(current == lexLitteralString);
+        self.emit(t, .LitteralString, self.token_buffer.items, &self.lex_start);
+    }
+
+    fn lexMultiLineLitteralString(self: *Self, t: *Token) void {
+        while (true) {
+            const b = self.nextByte() catch {
+                const err_msg = self.formatError(
+                    "Lexer: reached end of stream before multi-line string delimiter ''' ",
+                    .{},
+                );
+                self.emit(t, .Error, err_msg, &self.lex_start);
+                return;
+            };
+            switch (b) {
+                '\'' => {
+                    if (self.consumeByte('\'')) {
+                        if (self.consumeByte('\'')) {
+                            // there are some edge cases where a multi line string
+                            // could be written as: '''Hello World'''''
+                            // allowing for 5 `'` at the end.
+                            var counter: i8 = 2;
+                            while (counter > 0) {
+                                const c = self.peekByte() catch break;
+                                if (c != '\'') {
+                                    break;
+                                }
+                                self.token_buffer.append(c) catch {
+                                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                                    return;
+                                };
+                                _ = self.nextByte() catch unreachable;
+                                counter -= 1;
+                            }
+                            break;
+                        } else {
+                            self.toLastByte();
+                        }
+                    }
+                },
+                else => self.token_buffer.append(b) catch {
+                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                    return;
+                },
+            }
+        }
+        const current = self.popState();
+        assert(current == lexMultiLineLitteralString);
+        self.emit(t, .MultiLineLitteralString, self.token_buffer.items, &self.lex_start);
+    }
+
+    /// Called when encountering a string escape sequence in a multi line string.
+    /// assumes '\' is already consumed
+    fn lexMultiLineStringEscape(self: *Self, t: *Token) !void {
+        const b = self.peekByte() catch {
+            const err_msg = self.formatError(
+                "Lexer: expected an escape sequence before end of stream",
+                .{},
+            );
+            self.emit(t, .Error, err_msg, &self.lex_start);
+            return error.BadStringEscape;
+        };
+        if (common.isNewLine(b)) {
+            _ = self.nextByte() catch unreachable;
+            self.token_buffer.append(b) catch |e| {
+                self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                return e;
+            };
+            return;
+        }
+
+        try self.lexStringEscape(t);
+    }
+
     /// Called when encountering a string escape sequence
     /// assumes '\' is already consumed
     fn lexStringEscape(self: *Self, t: *Token) !void {
@@ -375,7 +549,8 @@ pub const Lexer = struct {
             return error.BadStringEscape;
         };
 
-        var hex: [8]u8 = undefined;
+        var hex: [10]u8 = undefined;
+        hex[0] = '\\';
 
         const bytes: []const u8 = switch (b) {
             'b' => &[2]u8{ '\\', 'b' },
@@ -386,25 +561,28 @@ pub const Lexer = struct {
             '"' => &[2]u8{ '\\', '"' },
             '\\' => &[2]u8{ '"', '"' },
             'x' => blk: {
-                if (!self.lexHexEscape(t, @ptrCast(&hex))) {
-                    // error already reported
-                    return error.BadStringEscape;
-                }
-                break :blk hex[0..2];
-            },
-            'u' => blk: {
-                if (!self.lexUnicodeEscape(t, 4, @as(*[4]u8, @ptrCast(&hex)))) {
+                hex[1] = 'x';
+                if (!self.lexHexEscape(t, hex[2..])) {
                     // error already reported
                     return error.BadStringEscape;
                 }
                 break :blk hex[0..4];
             },
-            'U' => blk: {
-                if (!self.lexUnicodeEscape(t, 8, &hex)) {
+            'u' => blk: {
+                hex[1] = 'u';
+                if (!self.lexUnicodeEscape(t, 4, hex[2..])) {
                     // error already reported
                     return error.BadStringEscape;
                 }
-                break :blk hex[0..8];
+                break :blk hex[0..6];
+            },
+            'U' => blk: {
+                hex[1] = 'U';
+                if (!self.lexUnicodeEscape(t, 8, hex[2..])) {
+                    // error already reported
+                    return error.BadStringEscape;
+                }
+                break :blk hex[0..10];
             },
             else => {
                 const err_msg = self.formatError(
@@ -422,7 +600,7 @@ pub const Lexer = struct {
         };
     }
 
-    fn lexHexEscape(self: *Self, t: *Token, out: *[2]u8) bool {
+    fn lexHexEscape(self: *Self, t: *Token, out: []u8) bool {
         for (0..2) |i| {
             const b = self.nextByte() catch {
                 const err_msg = self.formatError(
@@ -446,7 +624,7 @@ pub const Lexer = struct {
         return true;
     }
 
-    fn lexUnicodeEscape(self: *Self, t: *Token, comptime width: u8, out: *[width]u8) bool {
+    fn lexUnicodeEscape(self: *Self, t: *Token, comptime width: u8, out: []u8) bool {
         for (0..width) |i| {
             const b = self.nextByte() catch {
                 const err_msg = self.formatError(

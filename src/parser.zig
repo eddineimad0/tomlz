@@ -83,6 +83,15 @@ pub const Parser = struct {
                 .BasicString => {
                     debug.print("[{d},{d}]Tok:BasicString, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
                 },
+                .LitteralString => {
+                    debug.print("[{d},{d}]Tok:LitteralString, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
+                },
+                .MultiLineBasicString => {
+                    debug.print("[{d},{d}]Tok:MLBasicString, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
+                },
+                .MultiLineLitteralString => {
+                    debug.print("[{d},{d}]Tok:MLLitteralString, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
+                },
                 else => {},
             }
         }
@@ -93,7 +102,10 @@ test "temp" {
     const testing = std.testing;
     const src =
         \\ # This is a comment
-        \\ my_string = "Hello world!"
+        \\ my_string = 'Hello world!'
+        \\ my_string2 = "Hello w\x31rld!"
+        \\ my_string3 = "Hello w\u3100rld!"
+        \\ my_string4 = """Hello w\U41520000rld!"""
     ;
     var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
 
