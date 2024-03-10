@@ -29,6 +29,17 @@ pub inline fn isControl(byte: u8) bool {
 pub const isHex = ascii.isHex;
 pub const isDigit = ascii.isDigit;
 
+pub inline fn isBinary(byte: u8) bool {
+    return (byte == '0' or byte == '1');
+}
+
+pub inline fn isOctal(byte: u8) bool {
+    return switch (byte) {
+        '0'...'7' => true,
+        else => false,
+    };
+}
+
 pub inline fn isWhiteSpace(byte: u8) bool {
     return (byte == ' ' or byte == '\t');
 }

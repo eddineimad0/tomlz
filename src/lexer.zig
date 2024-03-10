@@ -11,7 +11,7 @@ pub const TokenType = enum {
     EOF,
     Integer,
     Float,
-    Bool,
+    Boolean,
     DateTime,
     ArrayStart,
     ArrayEnd,
@@ -321,7 +321,7 @@ pub const Lexer = struct {
         };
         if (common.isDigit(b)) {
             self.toLastByte();
-            // self.pushStateOrStop(, t: *Token)
+            self.pushStateOrStop(lexNumber, t);
         }
         switch (b) {
             '[' => {},
@@ -348,8 +348,24 @@ pub const Lexer = struct {
                 }
                 self.pushStateOrStop(lexLitteralString, t);
             },
-            '-', '+' => {},
-            else => {},
+            'i', 'n' => {
+                self.tolastbyte();
+                self.pushstateorstop(lexFloat, t);
+            },
+            '-', '+' => {
+                self.tolastbyte();
+                self.pushstateorstop(lexDecimalInteger, t);
+            },
+            't', 'f' => {
+                self.toLastByte();
+                self.pushStateOrStop(lexBoolean, t);
+                return;
+            },
+            else => {
+                const err_msg = self.formatError("Lexer: Non supported value type found", .{});
+                self.emit(t, .Error, err_msg, &self.prev_position);
+                return;
+            },
         }
     }
 
@@ -647,6 +663,233 @@ pub const Lexer = struct {
             out[i] = b;
         }
         return true;
+    }
+
+    /// Used to determine how the number value should be processed.
+    /// assumes there is at least a byte in the stream.
+    fn lexNumber(self: *Self, t: *Token) void {
+        // TODO: finish
+        const b = self.nextByte() catch unreachable;
+
+        // if (!common.isDigit(b)) {
+        //     const err_msg = self.formatError(
+        //         "Lexer: expected a digit, found '{c}'",
+        //         .{b},
+        //     );
+        //     self.emit(t, .Error, err_msg, &self.lex_start);
+        //     return;
+        // }
+
+        switch (b) {
+            '0' => {
+                // possibly a base speceific number.
+                const base = self.peekByte() catch ' ';
+                var wr = self.token_buffer.writer();
+                switch (base) {
+                    'b' => {
+                        _ = self.nextByte();
+                        wr.write(&[_]u8{ '0', 'b' });
+                        self.pushStateOrStop(lexBinaryInteger, t);
+                    },
+                    'o' => {
+                        _ = self.nextByte();
+                        wr.write(&[_]u8{ '0', 'o' });
+                        self.pushStateOrStop(lexOctalInteger, t);
+                    },
+                    'x' => {
+                        _ = self.nextByte();
+                        wr.write(&[_]u8{ '0', 'x' });
+                        self.pushStateOrStop(lexHexInteger, t);
+                    },
+                    else => {},
+                }
+            },
+        }
+        // '.', 'e', 'E' => break,
+        // '-', ':' => break,
+        // else => self.token_buffer.append(b) catch {
+        //     self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+        //     return;
+        // },
+        const current = self.popState();
+        assert(current == lexLitteralString);
+        self.emit(t, .LitteralString, self.token_buffer.items, &self.lex_start);
+    }
+
+    /// assumes 0b is already consumed
+    fn lexBinaryInteger(self: *Self, t: *Token) void {
+        while (true) {
+            const b = self.nextByte() catch break;
+            if (!common.isBinary(b) and b != '_') {
+                self.toLastByte();
+                break;
+            }
+
+            self.token_buffer.append(b) catch {
+                self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                return;
+            };
+        }
+        const current = self.popState();
+        assert(current == lexBinaryInteger);
+        self.emit(t, .Integer, self.token_buffer.items, &self.lex_start);
+    }
+
+    /// assumes 0o is already consumed
+    fn lexOctalInteger(self: *Self, t: *Token) void {
+        while (true) {
+            const b = self.nextByte() catch break;
+            if (!common.isOctal(b) and b != '_') {
+                self.toLastByte();
+                break;
+            }
+
+            self.token_buffer.append(b) catch {
+                self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                return;
+            };
+        }
+        const current = self.popState();
+        assert(current == lexOctalInteger);
+        self.emit(t, .Integer, self.token_buffer.items, &self.lex_start);
+    }
+
+    fn lexDecimalInteger(self: *Self, t: *Token) void {
+        while (true) {
+            const b = self.nextByte() catch break;
+            if (common.isDigit(b) and b == '_') {
+                self.token_buffer.append(b) catch {
+                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                    return;
+                };
+                continue;
+            }
+
+            // preparing to return
+            self.toLastByte();
+            const current = self.popState();
+            assert(current == lexDecimalInteger);
+
+            switch (b) {
+                '.', 'e', 'E', 'i', 'n' => {
+                    // switch to lexing a float
+                    self.pushStateOrStop(lexFloat, t);
+                    return;
+                },
+                '-', ':' => {}, //TODO:Date
+                else => break,
+            }
+        }
+        self.emit(t, .Integer, self.token_buffer.items, &self.lex_start);
+    }
+
+    /// assumes 0x is already consumed
+    fn lexHexInteger(self: *Self, t: *Token) void {
+        while (true) {
+            const b = self.nextByte() catch break;
+            if (!common.isHex(b) and b != '_') {
+                self.toLastByte();
+                break;
+            }
+
+            self.token_buffer.append(b) catch {
+                self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                return;
+            };
+        }
+        const current = self.popState();
+        assert(current == lexHexInteger);
+        self.emit(t, .Integer, self.token_buffer.items, &self.lex_start);
+    }
+
+    // lex float number
+    fn lexFloat(self: *Self, t: *Token) void {
+        while (true) {
+            const b = self.nextByte() catch break;
+            if (common.isDigit(b)) {
+                self.token_buffer.append(b) catch {
+                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                    return;
+                };
+                continue;
+            }
+
+            switch (b) {
+                '-', '+', '_', 'e', 'E', '.' => {
+                    self.token_buffer.append(b) catch {
+                        self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                        return;
+                    };
+                    continue;
+                },
+                'i' => {
+                    if (!self.consumeByte('n') or !self.consumeByte('f')) {
+                        const err_msg = self.formatError("Lexer: Invalid float", .{});
+                        self.emit(t, .Error, err_msg, &self.lex_start);
+                        return;
+                    }
+                    var wr = self.token_buffer.writer();
+                    _ = wr.write(&[_]u8{ 'i', 'n', 'f' }) catch {
+                        self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                        return;
+                    };
+                    break;
+                },
+                'n' => {
+                    if (!self.consumeByte('a') or !self.consumeByte('n')) {
+                        const err_msg = self.formatError("Lexer: Invalid float", .{});
+                        self.emit(t, .Error, err_msg, &self.lex_start);
+                        return;
+                    }
+                    var wr = self.token_buffer.writer();
+                    _ = wr.write(&[_]u8{ 'n', 'a', 'n' }) catch {
+                        self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                        return;
+                    };
+                    break;
+                },
+                else => {
+                    self.toLastByte();
+                    break;
+                },
+            }
+        }
+        const current = self.popState();
+        assert(current == lexFloat);
+        self.emit(t, .Float, self.token_buffer.items, &self.lex_start);
+    }
+
+    /// expects a boolean string
+    fn lexBoolean(self: *Self, t: *Token) void {
+        var boolean: [4]u8 = undefined;
+        var r = self.input.reader();
+        var count = 0;
+        count = r.read(&boolean) catch {
+            const err_msg = self.formatError(
+                "Lexer: unexpected end of stream",
+                .{},
+            );
+            self.emit(t, .Error, err_msg, &self.lex_start);
+        };
+        assert(count == 4);
+        if (!mem.eql(u8, &boolean, "true") and !mem.eql(u8, &boolean, "false")) {
+            const err_msg = self.formatError(
+                "Lexer: Expected boolean value found '{s}'",
+                .{boolean},
+            );
+            self.emit(t, .Error, err_msg, &self.lex_start);
+            return;
+        }
+
+        var wr = self.token_buffer.writer();
+        count = wr.write(&boolean) catch {
+            self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+            return;
+        };
+        assert(count == 4);
+        const current = self.popState();
+        assert(current == lexBoolean);
+        self.emit(t, .Boolean, self.token_buffer.items, &self.lex_start);
     }
 
     /// Used as a fallback when the lexer encounters an error.
