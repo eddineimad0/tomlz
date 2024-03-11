@@ -26,9 +26,9 @@ pub const TokenType = enum {
     ArrayStart,
     ArrayEnd,
     TableStart,
-    TableEnd,
+    TableName,
     ArrayTableStart,
-    ArrayTableEnd,
+    ArrayTableName,
     InlineTableStart,
     InlineTableEnd,
     Error,
@@ -228,7 +228,7 @@ pub const Lexer = struct {
             },
             else => {
                 self.toLastByte();
-                self.pushStateOrStop(lexKeyStart, t);
+                self.pushStateOrStop(lexKey, t);
             },
         }
     }
@@ -236,6 +236,8 @@ pub const Lexer = struct {
     /// Lexes an entire comment up to the newline character.
     /// the token value is not populated by the comment text,
     /// but rather set to null.
+    /// assumes the character '#' at the begining of the comment is already
+    /// consumed.
     fn lexComment(self: *Self, t: *Token) void {
         // self.updateStartPosition();
         _ = t;
@@ -255,19 +257,95 @@ pub const Lexer = struct {
     }
 
     fn lexTableStart(self: *Self, t: *Token) void {
-        _ = t;
-        _ = self;
+        const b = self.peekByte() catch {
+            const err_msg = self.formatError("Lexer: expected closing bracket ']' before end of stream", .{});
+            self.emit(t, .Error, err_msg, &self.lex_start);
+            return;
+        };
+        _ = self.popState();
+        if (b == '[') {
+            _ = self.nextByte() catch unreachable;
+            self.pushStateOrStop(lexArrayTableEnd, t);
+            self.emit(t, .ArrayTableStart, null, &self.lex_start);
+        } else {
+            self.pushStateOrStop(lexTableEnd, t);
+            self.emit(t, .TableStart, null, &self.lex_start);
+        }
+        self.pushStateOrStop(lexTableName, t);
+    }
+
+    fn lexTableName(self: *Self, t: *Token) void {
+        self.skipBytes(&[_]u8{ ' ', '\t' });
+        const b = self.peekByte() catch {
+            const err_msg = self.formatError("Lexer: expected closing bracket ']' before end of stream", .{});
+            self.emit(t, .Error, err_msg, &self.lex_start);
+            return;
+        };
+        switch (b) {
+            '.', ']' => {
+                const err_msg = self.formatError("Lexer: unexpected symbol found within table name", .{});
+                self.emit(t, .Error, err_msg, &self.lex_start);
+                return;
+            },
+            '"', '\'' => {
+                self.pushStateOrStop(lexTableNameEnd, t);
+                self.pushStateOrStop(lexQuottedKey, t);
+            },
+            else => {
+                self.pushStateOrStop(lexTableNameEnd, t);
+                self.pushStateOrStop(lexBareKey, t);
+            },
+        }
+    }
+
+    fn lexTableNameEnd(self: *Self, t: *Token) void {
+        self.skipBytes(&[_]u8{ ' ', '\t' });
+        const b = self.nextByte() catch {
+            const err_msg = self.formatError("Lexer: expected closing bracket ']' before end of stream", .{});
+            self.emit(t, .Error, err_msg, &self.lex_start);
+            return;
+        };
+        switch (b) {
+            '.' => {
+                _ = self.popState();
+                return;
+            },
+            ']' => {
+                self.popNState(2);
+                return;
+            },
+            else => {
+                const err_msg = self.formatError("Lexer: expected closing bracket ']' or comma '.' found {c}", .{b});
+                self.emit(t, .Error, err_msg, &self.lex_start);
+                return;
+            },
+        }
+    }
+
+    fn lexTableEnd(self: *Self, t: *Token) void {
+        _ = self.popState();
+        self.emit(t, .TableName, self.token_buffer.items, &self.lex_start);
+    }
+    fn lexArrayTableEnd(self: *Self, t: *Token) void {
+        if (!self.consumeByte(']')) {
+            const err_msg = self.formatError("Lexer expected end of Array of tables ']'", .{});
+            self.emit(t, .Error, err_msg, &self.lex_start);
+            return;
+        }
+        _ = self.popState();
+        self.emit(t, .ArrayTableName, self.token_buffer.items, &self.lex_start);
     }
 
     /// Handles lexing a key and calls the next appropriate function
     /// this function assumes that there is at least one byte in the stream
-    fn lexKeyStart(self: *Self, t: *Token) void {
+    fn lexKey(self: *Self, t: *Token) void {
         const b = self.peekByte() catch unreachable;
         self.pushStateOrStop(lexKeyEnd, t);
         switch (b) {
             '=', '.' => {
                 const err_msg = self.formatError("Lexer: expected a key name found '{c}' ", .{b});
                 self.emit(t, .Error, err_msg, &self.position);
+                return;
             },
             '"', '\'' => {
                 self.pushStateOrStop(lexQuottedKey, t);
@@ -300,6 +378,7 @@ pub const Lexer = struct {
             else => {
                 const err_msg = self.formatError("Lexer: expected '=' or '.' found '{c}'", .{b});
                 self.emit(t, .Error, err_msg, &self.prev_position);
+                return;
             },
         }
     }
@@ -319,6 +398,7 @@ pub const Lexer = struct {
             self.token_buffer.append(b) catch {
                 // In case of an error clear the state stack and update the token to an error token.
                 self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                return;
             };
         }
         const current = self.popState();
@@ -351,8 +431,14 @@ pub const Lexer = struct {
             return;
         }
         switch (b) {
-            '[' => {},
-            '{' => {},
+            '[' => {
+                self.pushStateOrStop(lexArrayValue, t);
+                self.emit(t, .ArrayStart, null, &self.lex_start);
+            },
+            '{' => {
+                self.pushStateOrStop(lexInlineTabValue, t);
+                self.emit(t, .InlineTableStart, null, &self.lex_start);
+            },
             '"' => {
                 if (self.consumeByte('"')) {
                     if (self.consumeByte('"')) {
@@ -1003,6 +1089,155 @@ pub const Lexer = struct {
         self.emit(t, .DateTime, self.token_buffer.items, &self.lex_start);
     }
 
+    /// assumes the starting bracket '[' was already consumed.
+    fn lexArrayValue(self: *Self, t: *Token) void {
+        while (true) {
+            const b = self.nextByte() catch break;
+            if (common.isNewLine(b) or common.isWhiteSpace(b)) {
+                self.skipBytes(&[_]u8{ ' ', '\n', '\r', '\t' });
+                continue;
+            }
+
+            switch (b) {
+                '#' => {
+                    self.pushStateOrStop(lexComment, t);
+                    return;
+                },
+                ',' => {
+                    const err_msg = self.formatError("Lexer: Unexpected comma ',' inside array", .{});
+                    self.emit(t, .Error, err_msg, &self.lex_start);
+                    return;
+                },
+                ']' => break,
+                else => {
+                    self.pushStateOrStop(lexArrayValueEnd, t);
+                    self.pushStateOrStop(lexValue, t);
+                    return;
+                },
+            }
+        }
+
+        const current = self.popState();
+        assert(current == lexArrayValueEnd);
+
+        self.emit(t, .ArrayEnd, null, &self.lex_start);
+    }
+
+    fn lexArrayValueEnd(self: *Self, t: *Token) void {
+        while (true) {
+            const b = self.peekByte() catch break;
+            if (common.isNewLine(b) or common.isWhiteSpace(b)) {
+                self.skipBytes(&[_]u8{ ' ', '\n', '\r', '\t' });
+                continue;
+            }
+
+            switch (b) {
+                '#' => {
+                    _ = self.nextByte() catch unreachable;
+                    self.pushStateOrStop(lexComment, t);
+                    return;
+                },
+                ',' => {
+                    _ = self.nextByte() catch unreachable;
+                    break;
+                },
+                ']' => break,
+                else => {
+                    const err_msg = self.formatError("Lexer: expected comma ',' or array closing bracket ']' found {c}", .{b});
+                    self.emit(t, .Error, err_msg, &self.lex_start);
+                    return;
+                },
+            }
+        }
+        const current = self.popState();
+        assert(current == lexArrayValueEnd);
+    }
+
+    /// assumes '{' is already consumed.
+    fn lexInlineTabValue(self: *Self, t: *Token) void {
+        while (true) {
+            const b = self.nextByte() catch break;
+            if (common.isNewLine(b)) {
+                const err_msg = self.formatError("Lexer: Newline not allowed inside inline tables.", .{});
+                self.emit(t, .Error, err_msg, &self.lex_start);
+                return;
+            }
+
+            if (common.isWhiteSpace(b)) {
+                self.skipBytes(&[_]u8{ ' ', '\t' });
+                continue;
+            }
+
+            switch (b) {
+                '#' => {
+                    self.pushStateOrStop(lexComment, t);
+                    return;
+                },
+                ',' => {
+                    const err_msg = self.formatError("Lexer: Unexpected comma ',' inside array", .{});
+                    self.emit(t, .Error, err_msg, &self.lex_start);
+                    return;
+                },
+                '}' => break,
+                else => {
+                    self.pushStateOrStop(lexInlineTabValueEnd, t);
+                    self.pushStateOrStop(lexKey, t);
+                    return;
+                },
+            }
+        }
+
+        const current = self.popState();
+        assert(current == lexInlineTabValue);
+
+        self.emit(t, .InlineTableEnd, null, &self.lex_start);
+    }
+
+    fn lexInlineTabValueEnd(self: *Self, t: *Token) void {
+        while (true) {
+            const b = self.peekByte() catch break;
+            if (common.isNewLine(b)) {
+                const err_msg = self.formatError("Lexer: Newline not allowed inside inline tables.", .{});
+                self.emit(t, .Error, err_msg, &self.lex_start);
+                return;
+            }
+
+            if (common.isWhiteSpace(b)) {
+                self.skipBytes(&[_]u8{ ' ', '\t' });
+                continue;
+            }
+
+            switch (b) {
+                '#' => {
+                    _ = self.nextByte() catch unreachable;
+                    self.pushStateOrStop(lexComment, t);
+                    return;
+                },
+                ',' => {
+                    _ = self.nextByte() catch unreachable;
+                    self.skipBytes(&[_]u8{ ' ', '\t' });
+                    if (self.consumeByte('}')) {
+                        const err_msg = self.formatError(
+                            "Lexer: a trailing comma ',' is not permitted after the last key/value pair in an inline table.",
+                            .{},
+                        );
+                        self.emit(t, .Error, err_msg, &self.lex_start);
+                        return;
+                    }
+                    break;
+                },
+                '}' => break,
+                else => {
+                    const err_msg = self.formatError("Lexer: expected comma ',' or an inline table terminator '}' found {c}", .{b});
+                    self.emit(t, .Error, err_msg, &self.lex_start);
+                    return;
+                },
+            }
+        }
+        const current = self.popState();
+        assert(current == lexArrayValueEnd);
+    }
+
     /// Used as a fallback when the lexer encounters an error.
     fn lexOnError(self: *Self, t: *Token) void {
         const err_msg = self.formatError("Lexer: Input Stream contains errors", .{});
@@ -1067,7 +1302,7 @@ pub const Lexer = struct {
         if (f == lexBoolean) {
             return "lexBoolean";
         }
-        if (f == lexKeyStart) {
+        if (f == lexKey) {
             return "lexKeyStart";
         }
         if (f == lexKeyEnd) {
@@ -1093,6 +1328,12 @@ pub const Lexer = struct {
         }
         if (f == lexValue) {
             return "lexValue";
+        }
+        if (f == lexArrayValue) {
+            return "lexArrayValueEnd";
+        }
+        if (f == lexArrayValueEnd) {
+            return "lexArrayValueEnd";
         }
 
         return "!!!Function Not found";
