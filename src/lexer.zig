@@ -7,7 +7,7 @@ const common = @import("common.zig");
 const assert = std.debug.assert;
 const Stack = std.ArrayList;
 
-const LOG_LEXER_STATE = true;
+const LOG_LEXER_STATE = false;
 
 pub const TokenType = enum {
     EOF,
@@ -348,6 +348,7 @@ pub const Lexer = struct {
         if (common.isDigit(b)) {
             self.toLastByte();
             self.pushStateOrStop(lexNumber, t);
+            return;
         }
         switch (b) {
             '[' => {},
@@ -379,7 +380,10 @@ pub const Lexer = struct {
                 self.pushStateOrStop(lexFloat, t);
             },
             '-', '+' => {
-                self.toLastByte();
+                self.token_buffer.append(b) catch {
+                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                    return;
+                };
                 self.pushStateOrStop(lexDecimalInteger, t);
             },
             't', 'f' => {
@@ -696,6 +700,7 @@ pub const Lexer = struct {
         const current = self.popState();
         assert(current == lexNumber);
 
+        // guaranteed digit.
         var b = self.nextByte() catch unreachable;
         self.token_buffer.append(b) catch {
             self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
@@ -746,11 +751,18 @@ pub const Lexer = struct {
                     return;
                 };
                 _ = self.nextByte() catch unreachable;
+                continue;
             }
 
             switch (b) {
-                '.', 'e', 'E' => self.pushStateOrStop(lexFloat, t),
-                '-', ':' => self.pushStateOrStop(lexDateTime, t),
+                '.', 'e', 'E' => {
+                    self.pushStateOrStop(lexFloat, t);
+                    return;
+                },
+                '-', ':' => {
+                    self.pushStateOrStop(lexDateTime, t);
+                    return;
+                },
                 else => break,
             }
         }
@@ -798,7 +810,7 @@ pub const Lexer = struct {
     fn lexDecimalInteger(self: *Self, t: *Token) void {
         while (true) {
             const b = self.nextByte() catch break;
-            if (common.isDigit(b) and b == '_') {
+            if (common.isDigit(b) or b == '_') {
                 self.token_buffer.append(b) catch {
                     self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
                     return;
@@ -817,7 +829,10 @@ pub const Lexer = struct {
                     self.pushStateOrStop(lexFloat, t);
                     return;
                 },
-                '-', ':' => {}, //TODO:Date
+                '-', ':' => {
+                    self.pushStateOrStop(lexDateTime, t);
+                    return;
+                },
                 else => break,
             }
         }
@@ -963,7 +978,7 @@ pub const Lexer = struct {
             const b = self.nextByte() catch break;
 
             switch (b) {
-                0...9,
+                '0'...'9',
                 ':',
                 'T',
                 't',

@@ -110,22 +110,22 @@ pub const Parser = struct {
     }
 };
 
-// test "lex string" {
-//     const testing = std.testing;
-//     const src =
-//         \\# This is a comment
-//         \\my_string = 'Hello world!'
-//         \\my_string2 = "Hello w\x31rld!"
-//         \\my_string3 = "Hello w\u3100rld!"
-//         \\my_string4 = """Hello w\U41520000rld!"""
-//     ;
-//     var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
-//
-//     var p = try Parser.init(testing.allocator, &ss);
-//     defer p.deinit();
-//
-//     try p.parse();
-// }
+test "lex string" {
+    const testing = std.testing;
+    const src =
+        \\# This is a comment
+        \\my_string = 'Hello world!'
+        \\my_string2 = "Hello w\x31rld!"
+        \\my_string3 = "Hello w\u3100rld!"
+        \\my_string4 = """Hello w\U41520000rld!"""
+    ;
+    var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
+
+    var p = try Parser.init(testing.allocator, &ss);
+    defer p.deinit();
+
+    try p.parse();
+}
 
 test "lex integer" {
     const testing = std.testing;
@@ -185,20 +185,20 @@ test "lex float" {
 
     try p.parse();
 }
-//
-// test "lex bool" {
-//     const testing = std.testing;
-//     const src =
-//         \\bool1 = true
-//         \\bool2 = false
-//     ;
-//     var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
-//
-//     var p = try Parser.init(testing.allocator, &ss);
-//     defer p.deinit();
-//
-//     try p.parse();
-// }
+
+test "lex bool" {
+    const testing = std.testing;
+    const src =
+        \\bool1 = true
+        \\bool2 = false
+    ;
+    var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
+
+    var p = try Parser.init(testing.allocator, &ss);
+    defer p.deinit();
+
+    try p.parse();
+}
 
 test "lex datetime" {
     const testing = std.testing;
