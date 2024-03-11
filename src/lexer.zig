@@ -1,4 +1,5 @@
 const std = @import("std");
+const opt = @import("build_options");
 const io = std.io;
 const mem = std.mem;
 const fmt = std.fmt;
@@ -7,7 +8,7 @@ const common = @import("common.zig");
 const assert = std.debug.assert;
 const Stack = std.ArrayList;
 
-const LOG_LEXER_STATE = false;
+const LOG_LEXER_STATE = opt.LOG_LEXER_STATE;
 
 pub const TokenType = enum {
     EOF,
@@ -26,9 +27,9 @@ pub const TokenType = enum {
     ArrayStart,
     ArrayEnd,
     TableStart,
-    TableName,
+    TableEnd,
     ArrayTableStart,
-    ArrayTableName,
+    ArrayTableEnd,
     InlineTableStart,
     InlineTableEnd,
     Error,
@@ -239,8 +240,6 @@ pub const Lexer = struct {
     /// assumes the character '#' at the begining of the comment is already
     /// consumed.
     fn lexComment(self: *Self, t: *Token) void {
-        // self.updateStartPosition();
-        _ = t;
         while (true) {
             const b = self.nextByte() catch {
                 break;
@@ -250,10 +249,11 @@ pub const Lexer = struct {
                 break;
             }
         }
-        // TODO: should we emit the token.
-        // emitToken(t, .Comment, null, self.lex_start);
         const last_func = self.popState();
         assert(last_func == lexComment);
+        if (opt.EMIT_COMMENT_TOKEN) {
+            emitToken(t, .Comment, null, &self.lex_start);
+        }
     }
 
     fn lexTableStart(self: *Self, t: *Token) void {
@@ -266,12 +266,13 @@ pub const Lexer = struct {
         if (b == '[') {
             _ = self.nextByte() catch unreachable;
             self.pushStateOrStop(lexArrayTableEnd, t);
+            self.pushStateOrStop(lexTableName, t);
             self.emit(t, .ArrayTableStart, null, &self.lex_start);
         } else {
             self.pushStateOrStop(lexTableEnd, t);
+            self.pushStateOrStop(lexTableName, t);
             self.emit(t, .TableStart, null, &self.lex_start);
         }
-        self.pushStateOrStop(lexTableName, t);
     }
 
     fn lexTableName(self: *Self, t: *Token) void {
@@ -308,6 +309,7 @@ pub const Lexer = struct {
         switch (b) {
             '.' => {
                 _ = self.popState();
+                self.emit(t, .Dot, null, &self.lex_start);
                 return;
             },
             ']' => {
@@ -324,8 +326,9 @@ pub const Lexer = struct {
 
     fn lexTableEnd(self: *Self, t: *Token) void {
         _ = self.popState();
-        self.emit(t, .TableName, self.token_buffer.items, &self.lex_start);
+        self.emit(t, .TableEnd, null, &self.lex_start);
     }
+
     fn lexArrayTableEnd(self: *Self, t: *Token) void {
         if (!self.consumeByte(']')) {
             const err_msg = self.formatError("Lexer expected end of Array of tables ']'", .{});
@@ -333,7 +336,7 @@ pub const Lexer = struct {
             return;
         }
         _ = self.popState();
-        self.emit(t, .ArrayTableName, self.token_buffer.items, &self.lex_start);
+        self.emit(t, .ArrayTableEnd, null, &self.lex_start);
     }
 
     /// Handles lexing a key and calls the next appropriate function
@@ -409,7 +412,7 @@ pub const Lexer = struct {
     fn lexQuottedKey(self: *Self, t: *Token) void {
         const current = self.popState();
         assert(current == lexQuottedKey);
-        const b = self.peekByte() catch unreachable;
+        const b = self.nextByte() catch unreachable;
         switch (b) {
             '"' => self.pushStateOrStop(lexBasicString, t),
             '\'' => self.pushStateOrStop(lexLitteralString, t),
@@ -1110,6 +1113,7 @@ pub const Lexer = struct {
                 },
                 ']' => break,
                 else => {
+                    self.toLastByte();
                     self.pushStateOrStop(lexArrayValueEnd, t);
                     self.pushStateOrStop(lexValue, t);
                     return;
@@ -1118,7 +1122,7 @@ pub const Lexer = struct {
         }
 
         const current = self.popState();
-        assert(current == lexArrayValueEnd);
+        assert(current == lexArrayValue);
 
         self.emit(t, .ArrayEnd, null, &self.lex_start);
     }
@@ -1180,6 +1184,7 @@ pub const Lexer = struct {
                 },
                 '}' => break,
                 else => {
+                    self.toLastByte();
                     self.pushStateOrStop(lexInlineTabValueEnd, t);
                     self.pushStateOrStop(lexKey, t);
                     return;
@@ -1228,14 +1233,14 @@ pub const Lexer = struct {
                 },
                 '}' => break,
                 else => {
-                    const err_msg = self.formatError("Lexer: expected comma ',' or an inline table terminator '}' found {c}", .{b});
+                    const err_msg = self.formatError("Lexer: expected comma ',' or an inline table terminator '}}' found {c}", .{b});
                     self.emit(t, .Error, err_msg, &self.lex_start);
                     return;
                 },
             }
         }
         const current = self.popState();
-        assert(current == lexArrayValueEnd);
+        assert(current == lexInlineTabValueEnd);
     }
 
     /// Used as a fallback when the lexer encounters an error.
@@ -1330,12 +1335,29 @@ pub const Lexer = struct {
             return "lexValue";
         }
         if (f == lexArrayValue) {
-            return "lexArrayValueEnd";
+            return "lexArrayValue";
         }
         if (f == lexArrayValueEnd) {
             return "lexArrayValueEnd";
         }
-
+        if (f == lexInlineTabValue) {
+            return "lexInlineTabValue";
+        }
+        if (f == lexInlineTabValueEnd) {
+            return "lexInlineTabValueEnd";
+        }
+        if (f == lexTableStart) {
+            return "lexTableStart";
+        }
+        if (f == lexTableEnd) {
+            return "lexTableEnd";
+        }
+        if (f == lexTableName) {
+            return "lexTableName";
+        }
+        if (f == lexTableNameEnd) {
+            return "lexTableNameEnd";
+        }
         return "!!!Function Not found";
     }
 
@@ -1352,8 +1374,10 @@ pub const Lexer = struct {
             .prev_position = .{ .line = 1, .offset = 0 },
             .position = .{ .line = 1, .offset = 0 },
             .lex_start = .{ .line = 1, .offset = 0 },
-            // TODO: move this constant to config module.
-            .token_buffer = try common.String8.initCapacity(allocator, 1024),
+            .token_buffer = try common.String8.initCapacity(
+                allocator,
+                opt.LEXER_BUFFER_SIZE,
+            ),
             .state_func_stack = state_func_stack,
         };
     }

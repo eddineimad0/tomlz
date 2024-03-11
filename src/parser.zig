@@ -80,6 +80,12 @@ pub const Parser = struct {
                 .Key => {
                     debug.print("[{d},{d}]Tok:Key, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
                 },
+                .Dot => {
+                    debug.print("[{d},{d}]Tok:Dot,\n", .{
+                        token.start.line,
+                        token.start.offset,
+                    });
+                },
                 .BasicString => {
                     debug.print("[{d},{d}]Tok:BasicString, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
                 },
@@ -103,6 +109,54 @@ pub const Parser = struct {
                 },
                 .DateTime => {
                     debug.print("[{d},{d}]Tok:DateTime, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
+                },
+                .InlineTableStart => {
+                    debug.print("[{d},{d}]Tok:InlineTableStart, \n", .{
+                        token.start.line,
+                        token.start.offset,
+                    });
+                },
+                .InlineTableEnd => {
+                    debug.print("[{d},{d}]Tok:InlineTableEnd, \n", .{
+                        token.start.line,
+                        token.start.offset,
+                    });
+                },
+                .ArrayStart => {
+                    debug.print("[{d},{d}]Tok:ArrayStart, \n", .{
+                        token.start.line,
+                        token.start.offset,
+                    });
+                },
+                .ArrayEnd => {
+                    debug.print("[{d},{d}]Tok:ArrayEnd, \n", .{
+                        token.start.line,
+                        token.start.offset,
+                    });
+                },
+                .TableStart => {
+                    debug.print("[{d},{d}]Tok:TableStart, \n", .{
+                        token.start.line,
+                        token.start.offset,
+                    });
+                },
+                .TableEnd => {
+                    debug.print("[{d},{d}]Tok:TableEnd , \n", .{
+                        token.start.line,
+                        token.start.offset,
+                    });
+                },
+                .ArrayTableStart => {
+                    debug.print("[{d},{d}]Tok:ArrayTableStart, \n", .{
+                        token.start.line,
+                        token.start.offset,
+                    });
+                },
+                .ArrayTableEnd => {
+                    debug.print("[{d},{d}]Tok:ArrayTableEnd , \n", .{
+                        token.start.line,
+                        token.start.offset,
+                    });
                 },
                 else => {},
             }
@@ -206,6 +260,102 @@ test "lex datetime" {
         \\odt1 = 1979-05-27T07:32:00Z
         \\odt2 = 1979-05-27T00:32:00-07:00
         \\odt3 = 1979-05-27T00:32:00.999999-07:00
+    ;
+    var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
+
+    var p = try Parser.init(testing.allocator, &ss);
+    defer p.deinit();
+
+    try p.parse();
+}
+
+test "lex array" {
+    const testing = std.testing;
+    const src =
+        \\integers = [ 1, 2, 3 ]
+        \\colors = [ "red", "yellow", "green" ]
+        \\nested_arrays_of_ints = [ [ 1, 2 ], [3, 4, 5] ]
+        \\nested_mixed_array = [ [ 1, 2 ], ["a", "b", "c"] ]
+        \\string_array = [ "all", 'strings', """are the same""", '''type''' ]
+        \\
+        \\# Mixed-type arrays are allowed
+        \\numbers = [ 0.1, 0.2, 0.5, 1, 2, 5 ]
+        \\contributors = [
+        \\  "Foo Bar <foo@example.com>",
+        \\  { name = "Baz Qux", email = "bazqux@example.com", url = "https://example.com/bazqux" }
+        \\]
+        \\
+    ;
+    var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
+
+    var p = try Parser.init(testing.allocator, &ss);
+    defer p.deinit();
+
+    try p.parse();
+}
+
+test "lex inline table" {
+    const testing = std.testing;
+    const src =
+        \\name = { first = "Tom", last = "Preston-Werner" }
+        \\point = { x = 1, y = 2 }
+        \\animal = { type.name = "pug" }
+    ;
+    var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
+
+    var p = try Parser.init(testing.allocator, &ss);
+    defer p.deinit();
+
+    try p.parse();
+}
+
+test "lex table" {
+    const testing = std.testing;
+    const src =
+        \\[table-1]
+        \\key1 = "some string"
+        \\key2 = 123
+        \\
+        \\[table-2]
+        \\key1 = "another string"
+        \\key2 = 456
+        \\[dog."tater.man"]
+        \\type.name = "pug"
+        \\[a.b.c]            # this is best practice
+        \\[ d.e.f ]          # same as [d.e.f]
+        \\[ g .  h  . i ]    # same as [g.h.i]
+        \\[ j . "ʞ" . 'l' ]  # same as [j."ʞ".'l']
+    ;
+    var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
+
+    var p = try Parser.init(testing.allocator, &ss);
+    defer p.deinit();
+
+    try p.parse();
+}
+
+test "lex array of tables" {
+    const testing = std.testing;
+    const src =
+        \\[[fruits]]
+        \\name = "apple"
+        \\
+        \\[fruits.physical]  # subtable
+        \\color = "red"
+        \\shape = "round"
+        \\
+        \\[[fruits.varieties]]  # nested array of tables
+        \\name = "red delicious"
+        \\
+        \\[[fruits.varieties]]
+        \\name = "granny smith"
+        \\
+        \\
+        \\[[fruits]]
+        \\name = "banana"
+        \\
+        \\[[fruits.varieties]]
+        \\name = "plantain"
     ;
     var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
 

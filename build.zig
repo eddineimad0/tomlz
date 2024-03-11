@@ -4,24 +4,12 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const max_nestting_allowed = b
-        .option(
-        u8,
-        "max_nestting",
-        "Set the maximum allowed level of table nesting, beyond which the parser will throw an error.",
-    ) orelse
-        6;
-
-    const options = b.addOptions();
-    options.addOption(u8, "MAX_NESTTING_LEVEL", max_nestting_allowed);
-    const options_module = options.createModule();
-
     var tomlz = b.createModule(.{
         .source_file = .{ .path = "src/main.zig" },
         .dependencies = &.{
             .{
                 .name = "build_options",
-                .module = options_module,
+                .module = prepareBuildOptions(b),
             },
         },
     });
@@ -65,4 +53,40 @@ pub fn build(b: *std.Build) !void {
     curr_test.addModule("tomlz", tomlz);
     const test_install_step = b.addInstallArtifact(curr_test, .{});
     test_step.dependOn(&test_install_step.step);
+}
+
+fn prepareBuildOptions(b: *std.Build) *std.Build.Module {
+    const max_nestting_allowed = b
+        .option(
+        u8,
+        "max_nestting",
+        "Set the maximum allowed level of table nesting, beyond which the parser will throw an error.",
+    ) orelse
+        6;
+
+    const log_lexer_state = b.option(
+        bool,
+        "toml_lexer_log_state",
+        "Log the lexer functions stack.",
+    ) orelse false;
+
+    const lexer_emit_comment = b.option(
+        bool,
+        "toml_lexer_emit_comment",
+        "If set the lexer will emit Comment tokens when encountering a comment.",
+    ) orelse false;
+
+    const lexer_buffer_size = b.option(
+        usize,
+        "toml_lexer_buffer_size",
+        "Specify the initial token buffer size used by the lexer.",
+    ) orelse 1024;
+
+    const options = b.addOptions();
+    options.addOption(u8, "MAX_NESTTING_LEVEL", max_nestting_allowed);
+    options.addOption(bool, "LOG_LEXER_STATE", log_lexer_state);
+    options.addOption(bool, "EMIT_COMMENT_TOKEN", lexer_emit_comment);
+    options.addOption(usize, "LEXER_BUFFER_SIZE", lexer_buffer_size);
+    const options_module = options.createModule();
+    return options_module;
 }
