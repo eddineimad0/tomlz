@@ -7,6 +7,59 @@ const fmt = std.fmt;
 pub const Allocator = std.mem.Allocator;
 pub const String8 = std.ArrayList(u8);
 
+/// Wrapper over std.ArrayList, makes it easy to expand the size.
+pub const ByteArray = struct {
+    const Implementation = std.ArrayList(u8);
+    impl: Implementation,
+
+    const Self = @This();
+
+    pub fn initCapacity(allocator: Allocator, initial_capacity: usize) Allocator.Error!Self {
+        return .{
+            .impl = try Implementation.initCapacity(allocator, initial_capacity),
+        };
+    }
+
+    pub inline fn isFull(self: *Self) bool {
+        return self.impl.items.len == self.impl.capacity;
+    }
+
+    fn doubleCapacity(self: *Self) Allocator.Error!void {
+        try self.impl.ensureTotalCapacityPrecise(self.impl.capacity *| 2);
+    }
+
+    pub fn append(self: *Self, byte: u8) Allocator.Error!void {
+        if (self.isFull()) {
+            try self.doubleCapacity();
+        }
+        self.impl.append(byte) catch unreachable;
+    }
+
+    pub fn appendSlice(self: *Self, slice: []const u8) Allocator.Error!void {
+        if (self.isFull() or (self.impl.items.len +| slice.len > self.impl.capacity)) {
+            try self.doubleCapacity();
+        }
+        self.impl.appendSlice(slice) catch unreachable;
+    }
+
+    pub inline fn clearContent(self: *Self) void {
+        self.impl.clearRetainingCapacity();
+    }
+
+    pub inline fn data(self: *const Self) []const u8 {
+        return self.impl.items;
+    }
+
+    pub inline fn print(self: *Self, comptime format: []const u8, args: anytype) !void {
+        var wr = self.impl.writer();
+        try wr.print(format, args);
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.impl.deinit();
+    }
+};
+
 /// Holds necessary informations about a position in the stream.
 pub const Position = struct {
     line: usize, // The line number in the current stream.

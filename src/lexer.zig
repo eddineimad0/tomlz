@@ -54,7 +54,7 @@ pub const Lexer = struct {
     prev_position: common.Position,
     // BUG: the value doesn't chage or update.
     lex_start: common.Position, // position from where we started lexing the current token.
-    token_buffer: common.String8,
+    token_buffer: common.ByteArray,
     state_func_stack: Stack(?LexFuncPtr),
 
     const Self = @This();
@@ -406,7 +406,7 @@ pub const Lexer = struct {
         }
         const current = self.popState();
         assert(current == lexBareKey);
-        self.emit(t, .Key, self.token_buffer.items, &self.lex_start);
+        self.emit(t, .Key, self.token_buffer.data(), &self.lex_start);
     }
 
     fn lexQuottedKey(self: *Self, t: *Token) void {
@@ -517,7 +517,7 @@ pub const Lexer = struct {
         }
         const current = self.popState();
         assert(current == lexBasicString);
-        self.emit(t, .BasicString, self.token_buffer.items, &self.lex_start);
+        self.emit(t, .BasicString, self.token_buffer.data(), &self.lex_start);
     }
 
     fn lexMultiLineBasicString(self: *Self, t: *Token) void {
@@ -565,7 +565,7 @@ pub const Lexer = struct {
         }
         const current = self.popState();
         assert(current == lexMultiLineBasicString);
-        self.emit(t, .MultiLineBasicString, self.token_buffer.items, &self.lex_start);
+        self.emit(t, .MultiLineBasicString, self.token_buffer.data(), &self.lex_start);
     }
 
     /// lex the string content between it's delimiters `'`.
@@ -597,7 +597,7 @@ pub const Lexer = struct {
         }
         const current = self.popState();
         assert(current == lexLitteralString);
-        self.emit(t, .LitteralString, self.token_buffer.items, &self.lex_start);
+        self.emit(t, .LitteralString, self.token_buffer.data(), &self.lex_start);
     }
 
     fn lexMultiLineLitteralString(self: *Self, t: *Token) void {
@@ -644,7 +644,7 @@ pub const Lexer = struct {
         }
         const current = self.popState();
         assert(current == lexMultiLineLitteralString);
-        self.emit(t, .MultiLineLitteralString, self.token_buffer.items, &self.lex_start);
+        self.emit(t, .MultiLineLitteralString, self.token_buffer.data(), &self.lex_start);
     }
 
     /// Called when encountering a string escape sequence in a multi line string.
@@ -673,7 +673,6 @@ pub const Lexer = struct {
     /// Called when encountering a string escape sequence
     /// assumes '\' is already consumed
     fn lexStringEscape(self: *Self, t: *Token) !void {
-        var wr = self.token_buffer.writer();
         const b = self.nextByte() catch {
             const err_msg = self.formatError(
                 "Lexer: expected an escape sequence before end of stream",
@@ -728,7 +727,7 @@ pub const Lexer = struct {
             },
         };
 
-        _ = wr.write(bytes) catch |e| {
+        self.token_buffer.appendSlice(bytes) catch |e| {
             self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
             return e;
         };
@@ -855,7 +854,7 @@ pub const Lexer = struct {
                 else => break,
             }
         }
-        self.emit(t, .Integer, self.token_buffer.items, &self.lex_start);
+        self.emit(t, .Integer, self.token_buffer.data(), &self.lex_start);
     }
 
     /// assumes 0b is already consumed
@@ -874,7 +873,7 @@ pub const Lexer = struct {
         }
         const current = self.popState();
         assert(current == lexBinaryInteger);
-        self.emit(t, .Integer, self.token_buffer.items, &self.lex_start);
+        self.emit(t, .Integer, self.token_buffer.data(), &self.lex_start);
     }
 
     /// assumes 0o is already consumed
@@ -893,7 +892,7 @@ pub const Lexer = struct {
         }
         const current = self.popState();
         assert(current == lexOctalInteger);
-        self.emit(t, .Integer, self.token_buffer.items, &self.lex_start);
+        self.emit(t, .Integer, self.token_buffer.data(), &self.lex_start);
     }
 
     fn lexDecimalInteger(self: *Self, t: *Token) void {
@@ -925,7 +924,7 @@ pub const Lexer = struct {
                 else => break,
             }
         }
-        self.emit(t, .Integer, self.token_buffer.items, &self.lex_start);
+        self.emit(t, .Integer, self.token_buffer.data(), &self.lex_start);
     }
 
     /// assumes 0x is already consumed
@@ -944,7 +943,7 @@ pub const Lexer = struct {
         }
         const current = self.popState();
         assert(current == lexHexInteger);
-        self.emit(t, .Integer, self.token_buffer.items, &self.lex_start);
+        self.emit(t, .Integer, self.token_buffer.data(), &self.lex_start);
     }
 
     // lex float number
@@ -973,8 +972,7 @@ pub const Lexer = struct {
                         self.emit(t, .Error, err_msg, &self.lex_start);
                         return;
                     }
-                    var wr = self.token_buffer.writer();
-                    _ = wr.write(&[_]u8{ 'i', 'n', 'f' }) catch {
+                    self.token_buffer.appendSlice(&[_]u8{ 'i', 'n', 'f' }) catch {
                         self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
                         return;
                     };
@@ -986,8 +984,7 @@ pub const Lexer = struct {
                         self.emit(t, .Error, err_msg, &self.lex_start);
                         return;
                     }
-                    var wr = self.token_buffer.writer();
-                    _ = wr.write(&[_]u8{ 'n', 'a', 'n' }) catch {
+                    self.token_buffer.appendSlice(&[_]u8{ 'n', 'a', 'n' }) catch {
                         self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
                         return;
                     };
@@ -1001,7 +998,7 @@ pub const Lexer = struct {
         }
         const current = self.popState();
         assert(current == lexFloat);
-        self.emit(t, .Float, self.token_buffer.items, &self.lex_start);
+        self.emit(t, .Float, self.token_buffer.data(), &self.lex_start);
     }
 
     /// expects a boolean string
@@ -1052,14 +1049,13 @@ pub const Lexer = struct {
             else => unreachable,
         }
 
-        var wr = self.token_buffer.writer();
-        _ = wr.write(boolean[0..count]) catch {
+        self.token_buffer.appendSlice(boolean[0..count]) catch {
             self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
             return;
         };
         const current = self.popState();
         assert(current == lexBoolean);
-        self.emit(t, .Boolean, self.token_buffer.items, &self.lex_start);
+        self.emit(t, .Boolean, self.token_buffer.data(), &self.lex_start);
     }
 
     fn lexDateTime(self: *Self, t: *Token) void {
@@ -1089,7 +1085,7 @@ pub const Lexer = struct {
 
         const current = self.popState();
         assert(current == lexDateTime);
-        self.emit(t, .DateTime, self.token_buffer.items, &self.lex_start);
+        self.emit(t, .DateTime, self.token_buffer.data(), &self.lex_start);
     }
 
     /// assumes the starting bracket '[' was already consumed.
@@ -1250,12 +1246,11 @@ pub const Lexer = struct {
     }
 
     fn formatError(self: *Self, comptime format: []const u8, args: anytype) []const u8 {
-        self.token_buffer.clearRetainingCapacity();
-        var tok_wr = self.token_buffer.writer();
-        tok_wr.print(format, args) catch {
+        self.token_buffer.clearContent();
+        self.token_buffer.print(format, args) catch {
             return Self.ERR_MSG_GENERIC;
         };
-        return self.token_buffer.items;
+        return self.token_buffer.data();
     }
 
     fn logState(self: *Self) void {
@@ -1374,7 +1369,7 @@ pub const Lexer = struct {
             .prev_position = .{ .line = 1, .offset = 0 },
             .position = .{ .line = 1, .offset = 0 },
             .lex_start = .{ .line = 1, .offset = 0 },
-            .token_buffer = try common.String8.initCapacity(
+            .token_buffer = try common.ByteArray.initCapacity(
                 allocator,
                 opt.LEXER_BUFFER_SIZE,
             ),
@@ -1390,7 +1385,7 @@ pub const Lexer = struct {
     pub fn nextToken(self: *Self, t: *Token) void {
         // the token buffer will be overwritten on every call
         // the caller should copy required data on emit.
-        self.token_buffer.clearRetainingCapacity();
+        self.token_buffer.clearContent();
         while (true) {
             if (LOG_LEXER_STATE) {
                 self.logState();
