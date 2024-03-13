@@ -155,7 +155,8 @@ pub const Parser = struct {
                 v.* = types.TomlValue{ .Integer = integer };
             },
             .Boolean => {
-                const boolean = if (mem.eql(u8, t.value.?, "true")) true else false;
+                debug.assert(t.value.?.len == 4 or t.value.?.len == 5);
+                const boolean = if (t.value.?.len == 4) true else false;
                 v.* = types.TomlValue{ .Boolean = boolean };
             },
             .Float => {
@@ -213,18 +214,33 @@ pub const Parser = struct {
         return slice[start_index..];
     }
 
-    fn stripEscapedNewlines(allocator: mem.Allocator, slice: []const u8) mem.Allocator.Error![]const u8 {
-        // TODO:
+    fn trimEscapedNewlines(allocator: mem.Allocator, slice: []const u8) mem.Allocator.Error![]const u8 {
         var str = try common.String8.initCapacity(allocator, slice.len);
         var wr = str.writer();
-        const index = mem.indexOf(u8, slice, &[_]u8{'\\'});
-        if (index) |i| {
-            _ = i;
-        } else {
-            // no escaped newlines
-            // slice is guranteed to fit
-            wr.write(slice) catch unreachable;
-            return str.toOwnedSlice();
+        var iter = mem.splitSequence(u8, slice, &[_]u8{'\\'});
+        wr.write(iter.first());
+        while (iter.next()) |seq| {
+            if (seq.len > 2 and seq[1] == '\\') {
+                // nothing to trim
+                str.append('\\') catch unreachable;
+                wr.write(seq);
+            }
+            var i = 0;
+            for (seq) |byte| {
+                switch (byte) {
+                    ' ', '\t', '\n', '\r' => {
+                        i += 1;
+                        continue;
+                    },
+                    else => break,
+                }
+                if (i != 0) {
+                    if (mem.indexOf(u8, seq[0..i], &[_]u8{'\n'}) == null) {
+                        // TODO: bad escape sequence
+                    }
+                }
+                wr.write(seq[i..]) catch unreachable;
+            }
         }
     }
 

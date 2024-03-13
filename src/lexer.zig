@@ -10,17 +10,20 @@ const Stack = std.ArrayList;
 
 const LOG_LEXER_STATE = opt.LOG_LEXER_STATE;
 
+// NOTE: for all strings and keys tokens the value won't contain the delimiters (`'`, `"`...etc).
+// for numbers such as integers and floats it only validates that they don't contain any
+// non permissable characters, the parser should make sure the values are valid for the type.
 pub const TokenType = enum {
     EOF,
     Key,
     Dot,
-    Comment,
+    Comment, // The lexer won't inlucde the newline byte in the comment value.
     Integer,
     Float,
-    Boolean,
+    Boolean, // The lexer validates that the value is either true or false.
     DateTime,
     BasicString,
-    LiteralString,
+    LiteralString, // The lexer validates that the string has no newline byte.
     MultiLineBasicString,
     MultiLineLiteralString,
     ArrayStart,
@@ -115,9 +118,6 @@ pub const Lexer = struct {
     /// Reads and return the next byte in the stream
     /// if it encounters and an end of steam an error is returned.
     fn nextByte(self: *Self) !u8 {
-        // if (self.is_at_eof) {
-        //     return error.EndOfStream;
-        // }
         const r = self.input.reader();
         const b = r.readByte() catch |err| {
             return err;
@@ -243,6 +243,12 @@ pub const Lexer = struct {
             const b = self.nextByte() catch {
                 break;
             };
+
+            if (common.isControl(b)) {
+                const err_msg = self.formatError("Lexer: control character '{}' not allowed in comments", .{b});
+                self.emit(t, .Error, err_msg, &self.lex_start);
+                return;
+            }
 
             if (common.isNewLine(b)) {
                 break;
@@ -505,6 +511,12 @@ pub const Lexer = struct {
                 self.emit(t, .Error, err_msg, &self.lex_start);
                 return;
             }
+            if (common.isControl(b)) {
+                const err_msg = self.formatError("Lexer: control character '{}' not allowed in basic strings", .{b});
+                self.emit(t, .Error, err_msg, &self.lex_start);
+                return;
+            }
+
             switch (b) {
                 '"' => break,
                 '\\' => self.lexStringEscape(t) catch return,
@@ -529,6 +541,11 @@ pub const Lexer = struct {
                 self.emit(t, .Error, err_msg, &self.lex_start);
                 return;
             };
+            if (common.isControl(b)) {
+                const err_msg = self.formatError("Lexer: control character '{}' not allowed in basic strings", .{b});
+                self.emit(t, .Error, err_msg, &self.lex_start);
+                return;
+            }
             switch (b) {
                 '"' => {
                     if (self.consumeByte('"')) {
@@ -578,6 +595,11 @@ pub const Lexer = struct {
                 self.emit(t, .Error, err_msg, &self.lex_start);
                 return;
             };
+            if (common.isControl(b)) {
+                const err_msg = self.formatError("Lexer: control character '{}' not allowed in litteral strings", .{b});
+                self.emit(t, .Error, err_msg, &self.lex_start);
+                return;
+            }
             if (common.isNewLine(b)) {
                 const err_msg = self.formatError(
                     "Lexer: litteral string can't contain a newline character 0x{X:0>2}",
@@ -609,6 +631,11 @@ pub const Lexer = struct {
                 self.emit(t, .Error, err_msg, &self.lex_start);
                 return;
             };
+            if (common.isControl(b)) {
+                const err_msg = self.formatError("Lexer: control character '{}' not allowed in litteral strings", .{b});
+                self.emit(t, .Error, err_msg, &self.lex_start);
+                return;
+            }
             switch (b) {
                 '\'' => {
                     if (self.consumeByte('\'')) {
