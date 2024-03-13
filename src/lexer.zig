@@ -23,7 +23,6 @@ pub const TokenType = enum {
     LitteralString,
     MultiLineBasicString,
     MultiLineLitteralString,
-    MultilineString,
     ArrayStart,
     ArrayEnd,
     TableStart,
@@ -54,7 +53,7 @@ pub const Lexer = struct {
     prev_position: common.Position,
     // BUG: the value doesn't chage or update.
     lex_start: common.Position, // position from where we started lexing the current token.
-    token_buffer: common.ByteArray,
+    token_buffer: common.DynArray(u8, null),
     state_func_stack: Stack(?LexFuncPtr),
 
     const Self = @This();
@@ -204,7 +203,7 @@ pub const Lexer = struct {
         self.toLastByte();
     }
 
-    fn lexRoot(self: *Self, t: *Token) void {
+    fn lexTable(self: *Self, t: *Token) void {
         const b = self.nextByte() catch {
             self.emit(t, .EOF, null, &self.position);
             return;
@@ -1269,8 +1268,8 @@ pub const Lexer = struct {
         if (f == EMIT_FUNC) {
             return "EmitToken";
         }
-        if (f == lexRoot) {
-            return "lexRoot";
+        if (f == lexTable) {
+            return "lexTable";
         }
         if (f == lexComment) {
             return "lexComment";
@@ -1362,14 +1361,14 @@ pub const Lexer = struct {
     pub fn init(allocator: mem.Allocator, input: *io.StreamSource) mem.Allocator.Error!Self {
         var state_func_stack = try Stack(?LexFuncPtr).initCapacity(allocator, 8);
         errdefer state_func_stack.deinit();
-        state_func_stack.append(lexRoot) catch unreachable; // we just allocated;
+        state_func_stack.append(lexTable) catch unreachable; // we just allocated;
         return .{
             .input = input,
             .index = 0,
             .prev_position = .{ .line = 1, .offset = 0 },
             .position = .{ .line = 1, .offset = 0 },
             .lex_start = .{ .line = 1, .offset = 0 },
-            .token_buffer = try common.ByteArray.initCapacity(
+            .token_buffer = try common.DynArray(u8, null).initCapacity(
                 allocator,
                 opt.LEXER_BUFFER_SIZE,
             ),

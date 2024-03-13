@@ -1,10 +1,16 @@
 const std = @import("std");
+const fmt = std.fmt;
 const mem = std.mem;
 const io = std.io;
 const debug = std.debug;
+const log = std.log;
 
 const lex = @import("lexer.zig");
 const cnst = @import("constants.zig");
+const common = @import("common.zig");
+const types = @import("types.zig");
+
+const StringHashmap = std.StringHashMap;
 
 fn skipUTF8BOM(in: *io.StreamSource) void {
     // INFO:
@@ -41,16 +47,38 @@ fn skipUTF16BOM(in: *io.StreamSource) void {
 pub const Parser = struct {
     lexer: lex.Lexer,
     toml_src: *io.StreamSource,
+    table_path: common.DynArray(types.Key, null),
+    allocator: mem.Allocator,
+    implicit_tables: StringHashmap(void),
+    root_table: types.TomlTable,
+    current_table: *types.TomlTable,
+    current_key: types.Key,
 
     const Self = @This();
+
+    const Error = error{
+        LexerError,
+        DuplicateKey,
+        InvalidInteger,
+        InvalidFloat,
+        BadValue,
+    };
 
     /// initialize a toml parser, the toml_input pointer should remain valid
     /// until the parser is deinitialized.
     /// call deinit() when done to release memory resources.
     pub fn init(allocator: mem.Allocator, toml_input: *io.StreamSource) mem.Allocator.Error!Self {
+        var map = StringHashmap(bool).init(allocator);
+        map.ensureTotalCapacity(16);
         return .{
             .lexer = try lex.Lexer.init(allocator, toml_input),
+            .table_path = try common.DynArray(types.Key, null).initCapacity(allocator, 16),
             .toml_src = toml_input,
+            .implicit_tables = map,
+            .allocator = allocator,
+            .root_table = try types.TomlTable.init(allocator),
+            .current_key = "",
+            .current_table = undefined,
         };
     }
 
@@ -58,9 +86,149 @@ pub const Parser = struct {
     /// you shouldn't attempt to use the parser after calling this function
     pub fn deinit(self: *Self) void {
         self.lexer.deinit();
+        // TODO: free content.
+        self.table_path.deinit();
+        self.implicit_tables.deinit();
     }
 
-    pub fn parse(self: *Self) !void {
+    pub fn parse(self: *Self) (mem.Allocator.Error | Parser.Error)!void {
+        skipUTF16BOM(self.toml_src);
+        skipUTF8BOM(self.toml_src);
+
+        self.current_table = &self.root_table;
+
+        var token: lex.Token = undefined;
+
+        while (true) {
+            self.lexer.nextToken(&token);
+            switch (token.type) {
+                .EOF => break,
+                .Error => {
+                    log.err("Error: [line:{d},col:{d}], {s}\n", .{ token.start.line, token.start.offset, token.value.? });
+                    return Error.LexerError;
+                },
+                .TableStart => {},
+                .TableEnd => {},
+                .Key => {
+                    const key = try self.allocator.alloc(u8, token.value.?.len);
+                    @memcpy(key, token.value.?);
+                    self.current_table = key;
+                },
+                .Integer,
+                .Boolean,
+                .Float,
+                .BasicString,
+                .MultiLineBasicString,
+                .MultiLineLitteralString,
+                .DateTime,
+                => {
+                    var value: types.TomlValue = undefined;
+                    try self.parseValue(self.allocator, &token, &value);
+                    self.putValue(&value);
+                },
+                .Dot => {
+                    try self.pushImplicitTable(self.current_key);
+                },
+                .Comment => {},
+                else => {
+                    log.err("Parser: Unexpected token found, `{}`\n", .{token.type});
+                },
+            }
+        }
+    }
+
+    fn pushImplicitTable(self: *Self, key: common.Key) mem.Allocator.Error!void {
+        try self.implicit_tables.put(
+            key,
+            void,
+        );
+        try self.table_path.append(key);
+    }
+
+    fn parseValue(allocator: mem.Allocator, t: *const lex.Token, v: *types.TomlValue) (mem.Allocator.Error | Parser.Error)!void {
+        switch (t.type) {
+            .Integer => {
+                const integer = fmt.parseInt(isize, t.value.?, 0) catch |e| {
+                    log.err("Parser: couldn't convert to integer, input={s}, error={}\n", .{ t.value.?, e });
+                    return Error.InvalidInteger;
+                };
+                v.* = types.TomlValue{ .Integer = integer };
+            },
+            .Boolean => {
+                const boolean = if (mem.eql(u8, t.value.?, "true")) true else false;
+                v.* = types.TomlValue{ .Boolean = boolean };
+            },
+            .Float => {
+                const float = fmt.parseFloat(f64, t.value.?) catch |e| {
+                    log.err("Parser: couldn't convert to float, input={s}, error={}\n", .{ t.value.?, e });
+                    return Error.InvalidFloat;
+                };
+                v.* = types.TomlValue{ .Float = float };
+            },
+            .BasicString => {},
+            .MultiLineBasicString => {},
+            .LitteralString => {
+                // we don't own the slice in token.value so copy it.
+                const string = try allocator.alloc(u8, t.value.?.len);
+                @memcpy(string, t.value.?);
+                v.* = types.TomlValue{ .String = string };
+            },
+            .MultiLineLitteralString => {
+                const string = try allocator.alloc(u8, t.value.?.len);
+                const slice = stripInitialNewline(t.value.?);
+                @memcpy(string, slice);
+                v.* = types.TomlValue{ .String = string };
+            },
+            else => {
+                log.err("Parser: Unkown value type `{}`\n", .{t.type});
+                return Error.BadValue;
+            },
+        }
+    }
+
+    fn putValue(self: *Self, value: *types.TomlValue) (mem.Allocator.Error | Parser.Error)!void {
+        const key = self.current_key;
+        const dest_table = self.current_table;
+        if (self.current_table.getOrNull(key)) |*v| {
+            // possibly a duplicate key
+            if (self.implicit_tables.contains(key)) {
+                // make it explicit
+                _ = self.implicit_tables.remove(key);
+                dest_table = &v.Table;
+            } else {
+                log.err("Parser: Redefinition of key={s}", .{key});
+                return Error.DuplicateKey;
+            }
+        }
+        try self.dest_table.put(key, value);
+    }
+
+    fn stripInitialNewline(slice: []const u8) []const u8 {
+        var start_index: usize = 0;
+        if (slice.len > 0 and slice[0] == '\n') {
+            start_index = 1;
+        } else if (slice.len > 1 and slice[0] == '\r' and slice[1] == '\n') {
+            start_index = 2;
+        }
+        return slice[start_index..];
+    }
+
+    fn stripEscapedNewlines(allocator: mem.Allocator, slice: []const u8) mem.Allocator.Error![]const u8 {
+        // TODO:
+        var str = try common.String8.initCapacity(allocator, slice.len);
+        var wr = str.writer();
+        const index = mem.indexOf(u8, slice, &[_]u8{'\\'});
+        if (index) |i| {
+            _ = i;
+        } else {
+            // no escaped newlines
+            // slice is guranteed to fit
+            wr.write(slice) catch unreachable;
+            return str.toOwnedSlice();
+        }
+    }
+
+    fn parseDebug(self: *Self) !void {
         skipUTF16BOM(self.toml_src);
         skipUTF8BOM(self.toml_src);
 
@@ -158,7 +326,6 @@ pub const Parser = struct {
                         token.start.offset,
                     });
                 },
-                else => {},
             }
         }
     }
@@ -178,7 +345,7 @@ test "lex string" {
     var p = try Parser.init(testing.allocator, &ss);
     defer p.deinit();
 
-    try p.parse();
+    try p.parseDebug();
 }
 
 test "lex integer" {
@@ -207,7 +374,7 @@ test "lex integer" {
     var p = try Parser.init(testing.allocator, &ss);
     defer p.deinit();
 
-    try p.parse();
+    try p.parseDebug();
 }
 
 test "lex float" {
@@ -237,7 +404,7 @@ test "lex float" {
     var p = try Parser.init(testing.allocator, &ss);
     defer p.deinit();
 
-    try p.parse();
+    try p.parseDebug();
 }
 
 test "lex bool" {
@@ -251,7 +418,7 @@ test "lex bool" {
     var p = try Parser.init(testing.allocator, &ss);
     defer p.deinit();
 
-    try p.parse();
+    try p.parseDebug();
 }
 
 test "lex datetime" {
@@ -266,7 +433,7 @@ test "lex datetime" {
     var p = try Parser.init(testing.allocator, &ss);
     defer p.deinit();
 
-    try p.parse();
+    try p.parseDebug();
 }
 
 test "lex array" {
@@ -291,7 +458,7 @@ test "lex array" {
     var p = try Parser.init(testing.allocator, &ss);
     defer p.deinit();
 
-    try p.parse();
+    try p.parseDebug();
 }
 
 test "lex inline table" {
@@ -306,7 +473,7 @@ test "lex inline table" {
     var p = try Parser.init(testing.allocator, &ss);
     defer p.deinit();
 
-    try p.parse();
+    try p.parseDebug();
 }
 
 test "lex table" {
@@ -331,7 +498,7 @@ test "lex table" {
     var p = try Parser.init(testing.allocator, &ss);
     defer p.deinit();
 
-    try p.parse();
+    try p.parseDebug();
 }
 
 test "lex array of tables" {
@@ -362,5 +529,5 @@ test "lex array of tables" {
     var p = try Parser.init(testing.allocator, &ss);
     defer p.deinit();
 
-    try p.parse();
+    try p.parseDebug();
 }

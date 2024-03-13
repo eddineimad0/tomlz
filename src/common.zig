@@ -8,57 +8,73 @@ pub const Allocator = std.mem.Allocator;
 pub const String8 = std.ArrayList(u8);
 
 /// Wrapper over std.ArrayList, makes it easy to expand the size.
-pub const ByteArray = struct {
-    const Implementation = std.ArrayList(u8);
-    impl: Implementation,
+/// the destructor argument is a function used when clearing the array.
+pub fn DynArray(comptime T: type, comptime destructor: ?*fn (*T) void) type {
+    return struct {
+        const Implementation = std.ArrayList(T);
+        impl: Implementation,
 
-    const Self = @This();
+        const Self = @This();
 
-    pub fn initCapacity(allocator: Allocator, initial_capacity: usize) Allocator.Error!Self {
-        return .{
-            .impl = try Implementation.initCapacity(allocator, initial_capacity),
-        };
-    }
-
-    pub inline fn isFull(self: *Self) bool {
-        return self.impl.items.len == self.impl.capacity;
-    }
-
-    fn doubleCapacity(self: *Self) Allocator.Error!void {
-        try self.impl.ensureTotalCapacityPrecise(self.impl.capacity *| 2);
-    }
-
-    pub fn append(self: *Self, byte: u8) Allocator.Error!void {
-        if (self.isFull()) {
-            try self.doubleCapacity();
+        pub fn initCapacity(allocator: Allocator, initial_capacity: usize) Allocator.Error!Self {
+            return .{
+                .impl = try Implementation.initCapacity(allocator, initial_capacity),
+            };
         }
-        self.impl.append(byte) catch unreachable;
-    }
 
-    pub fn appendSlice(self: *Self, slice: []const u8) Allocator.Error!void {
-        if (self.isFull() or (self.impl.items.len +| slice.len > self.impl.capacity)) {
-            try self.doubleCapacity();
+        pub inline fn isFull(self: *Self) bool {
+            return self.impl.items.len == self.impl.capacity;
         }
-        self.impl.appendSlice(slice) catch unreachable;
-    }
 
-    pub inline fn clearContent(self: *Self) void {
-        self.impl.clearRetainingCapacity();
-    }
+        fn doubleCapacity(self: *Self) Allocator.Error!void {
+            try self.impl.ensureTotalCapacityPrecise(self.impl.capacity *| 2);
+        }
 
-    pub inline fn data(self: *const Self) []const u8 {
-        return self.impl.items;
-    }
+        pub fn append(self: *Self, byte: T) Allocator.Error!void {
+            if (self.isFull()) {
+                try self.doubleCapacity();
+            }
+            self.impl.append(byte) catch unreachable;
+        }
 
-    pub inline fn print(self: *Self, comptime format: []const u8, args: anytype) !void {
-        var wr = self.impl.writer();
-        try wr.print(format, args);
-    }
+        pub fn appendSlice(self: *Self, slice: []const T) Allocator.Error!void {
+            if (self.isFull() or (self.impl.items.len +| slice.len > self.impl.capacity)) {
+                try self.doubleCapacity();
+            }
+            self.impl.appendSlice(slice) catch unreachable;
+        }
 
-    pub fn deinit(self: *Self) void {
-        self.impl.deinit();
-    }
-};
+        pub inline fn clearContent(self: *Self) void {
+            if (destructor) |destroy| {
+                for (self.impl.items) |*item| {
+                    destroy(item);
+                }
+            }
+            self.impl.clearRetainingCapacity();
+        }
+
+        pub inline fn data(self: *const Self) []const T {
+            return self.impl.items;
+        }
+
+        pub inline fn print(self: *Self, comptime format: []const u8, args: anytype) !void {
+            var wr = self.impl.writer();
+            try wr.print(format, args);
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.clearContent();
+            self.impl.deinit();
+        }
+
+        pub fn getOrNull(self: *Self, index: usize) ?*T {
+            if (index >= self.impl.items.len) {
+                return null;
+            }
+            return &self.impl.items[index];
+        }
+    };
+}
 
 /// Holds necessary informations about a position in the stream.
 pub const Position = struct {
