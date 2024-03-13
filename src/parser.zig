@@ -119,7 +119,7 @@ pub const Parser = struct {
                 .Float,
                 .BasicString,
                 .MultiLineBasicString,
-                .MultiLineLitteralString,
+                .MultiLineLiteralString,
                 .DateTime,
                 => {
                     var value: types.TomlValue = undefined;
@@ -167,13 +167,13 @@ pub const Parser = struct {
             },
             .BasicString => {},
             .MultiLineBasicString => {},
-            .LitteralString => {
+            .LiteralString => {
                 // we don't own the slice in token.value so copy it.
                 const string = try allocator.alloc(u8, t.value.?.len);
                 @memcpy(string, t.value.?);
                 v.* = types.TomlValue{ .String = string };
             },
-            .MultiLineLitteralString => {
+            .MultiLineLiteralString => {
                 const string = try allocator.alloc(u8, t.value.?.len);
                 const slice = stripInitialNewline(t.value.?);
                 @memcpy(string, slice);
@@ -257,14 +257,14 @@ pub const Parser = struct {
                 .BasicString => {
                     debug.print("[{d},{d}]Tok:BasicString, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
                 },
-                .LitteralString => {
-                    debug.print("[{d},{d}]Tok:LitteralString, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
+                .LiteralString => {
+                    debug.print("[{d},{d}]Tok:LiteralString, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
                 },
                 .MultiLineBasicString => {
                     debug.print("[{d},{d}]Tok:MLBasicString, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
                 },
-                .MultiLineLitteralString => {
-                    debug.print("[{d},{d}]Tok:MLLitteralString, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
+                .MultiLineLiteralString => {
+                    debug.print("[{d},{d}]Tok:MLLiteralString, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
                 },
                 .Integer => {
                     debug.print("[{d},{d}]Tok:Integer, {s}\n", .{ token.start.line, token.start.offset, token.value.? });

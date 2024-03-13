@@ -20,9 +20,9 @@ pub const TokenType = enum {
     Boolean,
     DateTime,
     BasicString,
-    LitteralString,
+    LiteralString,
     MultiLineBasicString,
-    MultiLineLitteralString,
+    MultiLineLiteralString,
     ArrayStart,
     ArrayEnd,
     TableStart,
@@ -414,7 +414,7 @@ pub const Lexer = struct {
         const b = self.nextByte() catch unreachable;
         switch (b) {
             '"' => self.pushStateOrStop(lexBasicString, t),
-            '\'' => self.pushStateOrStop(lexLitteralString, t),
+            '\'' => self.pushStateOrStop(lexLiteralString, t),
             else => unreachable,
         }
     }
@@ -455,13 +455,13 @@ pub const Lexer = struct {
             '\'' => {
                 if (self.consumeByte('\'')) {
                     if (self.consumeByte('\'')) {
-                        self.pushStateOrStop(lexMultiLineLitteralString, t);
+                        self.pushStateOrStop(lexMultiLineLiteralString, t);
                         return;
                     } else {
                         self.toLastByte();
                     }
                 }
-                self.pushStateOrStop(lexLitteralString, t);
+                self.pushStateOrStop(lexLiteralString, t);
             },
             'i', 'n' => {
                 self.toLastByte();
@@ -568,7 +568,7 @@ pub const Lexer = struct {
     }
 
     /// lex the string content between it's delimiters `'`.
-    fn lexLitteralString(self: *Self, t: *Token) void {
+    fn lexLiteralString(self: *Self, t: *Token) void {
         while (true) {
             const b = self.nextByte() catch {
                 const err_msg = self.formatError(
@@ -595,11 +595,11 @@ pub const Lexer = struct {
             }
         }
         const current = self.popState();
-        assert(current == lexLitteralString);
-        self.emit(t, .LitteralString, self.token_buffer.data(), &self.lex_start);
+        assert(current == lexLiteralString);
+        self.emit(t, .LiteralString, self.token_buffer.data(), &self.lex_start);
     }
 
-    fn lexMultiLineLitteralString(self: *Self, t: *Token) void {
+    fn lexMultiLineLiteralString(self: *Self, t: *Token) void {
         while (true) {
             const b = self.nextByte() catch {
                 const err_msg = self.formatError(
@@ -642,8 +642,8 @@ pub const Lexer = struct {
             }
         }
         const current = self.popState();
-        assert(current == lexMultiLineLitteralString);
-        self.emit(t, .MultiLineLitteralString, self.token_buffer.data(), &self.lex_start);
+        assert(current == lexMultiLineLiteralString);
+        self.emit(t, .MultiLineLiteralString, self.token_buffer.data(), &self.lex_start);
     }
 
     /// Called when encountering a string escape sequence in a multi line string.
@@ -1289,8 +1289,8 @@ pub const Lexer = struct {
         if (f == lexQuottedKey) {
             return "lexQuottedKey";
         }
-        if (f == lexLitteralString) {
-            return "lexLitteralString";
+        if (f == lexLiteralString) {
+            return "lexLiteralString";
         }
         if (f == lexBasicString) {
             return "lexBasicString";
@@ -1322,8 +1322,8 @@ pub const Lexer = struct {
         if (f == lexMultiLineBasicString) {
             return "lexMultiLineBasicString";
         }
-        if (f == lexMultiLineLitteralString) {
-            return "lexMultiLineLitteralString";
+        if (f == lexMultiLineLiteralString) {
+            return "lexMultiLineLiteralString";
         }
         if (f == lexValue) {
             return "lexValue";
