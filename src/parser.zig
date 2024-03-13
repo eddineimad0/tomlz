@@ -61,6 +61,7 @@ pub const Parser = struct {
         DuplicateKey,
         InvalidInteger,
         InvalidFloat,
+        InvalidStringEscape,
         BadValue,
     };
 
@@ -68,8 +69,8 @@ pub const Parser = struct {
     /// until the parser is deinitialized.
     /// call deinit() when done to release memory resources.
     pub fn init(allocator: mem.Allocator, toml_input: *io.StreamSource) mem.Allocator.Error!Self {
-        var map = StringHashmap(bool).init(allocator);
-        map.ensureTotalCapacity(16);
+        var map = StringHashmap(void).init(allocator);
+        try map.ensureTotalCapacity(16);
         return .{
             .lexer = try lex.Lexer.init(allocator, toml_input),
             .table_path = try common.DynArray(types.Key, null).initCapacity(allocator, 16),
@@ -89,9 +90,10 @@ pub const Parser = struct {
         // TODO: free content.
         self.table_path.deinit();
         self.implicit_tables.deinit();
+        self.root_table.deinit();
     }
 
-    pub fn parse(self: *Self) (mem.Allocator.Error | Parser.Error)!void {
+    pub fn parse(self: *Self) (mem.Allocator.Error || Parser.Error)!*const types.TomlTable {
         skipUTF16BOM(self.toml_src);
         skipUTF8BOM(self.toml_src);
 
@@ -104,7 +106,7 @@ pub const Parser = struct {
             switch (token.type) {
                 .EOF => break,
                 .Error => {
-                    log.err("Error: [line:{d},col:{d}], {s}\n", .{ token.start.line, token.start.offset, token.value.? });
+                    log.err("[line:{d},col:{d}], {s}\n", .{ token.start.line, token.start.offset, token.value.? });
                     return Error.LexerError;
                 },
                 .TableStart => {},
@@ -112,7 +114,7 @@ pub const Parser = struct {
                 .Key => {
                     const key = try self.allocator.alloc(u8, token.value.?.len);
                     @memcpy(key, token.value.?);
-                    self.current_table = key;
+                    self.current_key = key;
                 },
                 .Integer,
                 .Boolean,
@@ -123,29 +125,30 @@ pub const Parser = struct {
                 .DateTime,
                 => {
                     var value: types.TomlValue = undefined;
-                    try self.parseValue(self.allocator, &token, &value);
-                    self.putValue(&value);
+                    try parseValue(self.allocator, &token, &value);
+                    try self.putValue(&value);
                 },
                 .Dot => {
                     try self.pushImplicitTable(self.current_key);
                 },
                 .Comment => {},
                 else => {
-                    log.err("Parser: Unexpected token found, `{}`\n", .{token.type});
+                    log.err("Parser: unexpected token found, `{}`\n", .{token.type});
                 },
             }
         }
+        return &self.root_table;
     }
 
-    fn pushImplicitTable(self: *Self, key: common.Key) mem.Allocator.Error!void {
+    fn pushImplicitTable(self: *Self, key: types.Key) mem.Allocator.Error!void {
         try self.implicit_tables.put(
             key,
-            void,
+            {},
         );
         try self.table_path.append(key);
     }
 
-    fn parseValue(allocator: mem.Allocator, t: *const lex.Token, v: *types.TomlValue) (mem.Allocator.Error | Parser.Error)!void {
+    fn parseValue(allocator: mem.Allocator, t: *const lex.Token, v: *types.TomlValue) (mem.Allocator.Error || Parser.Error)!void {
         switch (t.type) {
             .Integer => {
                 const integer = fmt.parseInt(isize, t.value.?, 0) catch |e| {
@@ -160,14 +163,23 @@ pub const Parser = struct {
                 v.* = types.TomlValue{ .Boolean = boolean };
             },
             .Float => {
+                // BUG: 7. and 3.e+20 are reconginzed as valid float where which deviate from the toml 1.0 spec
                 const float = fmt.parseFloat(f64, t.value.?) catch |e| {
                     log.err("Parser: couldn't convert to float, input={s}, error={}\n", .{ t.value.?, e });
                     return Error.InvalidFloat;
                 };
                 v.* = types.TomlValue{ .Float = float };
             },
-            .BasicString => {},
-            .MultiLineBasicString => {},
+            .BasicString => {
+                const string = try decodeEscaped(allocator, t.value.?);
+                v.* = types.TomlValue{ .String = string };
+            },
+            .MultiLineBasicString => {
+                const trimmed = try trimEscapedNewlines(allocator, stripInitialNewline(t.value.?));
+                defer allocator.free(trimmed);
+                const string = try decodeEscaped(allocator, trimmed);
+                v.* = types.TomlValue{ .String = string };
+            },
             .LiteralString => {
                 // we don't own the slice in token.value so copy it.
                 const string = try allocator.alloc(u8, t.value.?.len);
@@ -181,27 +193,28 @@ pub const Parser = struct {
                 v.* = types.TomlValue{ .String = string };
             },
             else => {
-                log.err("Parser: Unkown value type `{}`\n", .{t.type});
+                log.err("Parser: unkown value type `{}`\n", .{t.type});
                 return Error.BadValue;
             },
         }
     }
 
-    fn putValue(self: *Self, value: *types.TomlValue) (mem.Allocator.Error | Parser.Error)!void {
+    fn putValue(self: *Self, value: *types.TomlValue) (mem.Allocator.Error || Parser.Error)!void {
+        // BUG: walk table path before putting values.
         const key = self.current_key;
-        const dest_table = self.current_table;
-        if (self.current_table.getOrNull(key)) |*v| {
+        var dest_table = self.current_table;
+        if (self.current_table.getMutOrNull(key)) |v| {
             // possibly a duplicate key
             if (self.implicit_tables.contains(key)) {
                 // make it explicit
                 _ = self.implicit_tables.remove(key);
                 dest_table = &v.Table;
             } else {
-                log.err("Parser: Redefinition of key={s}", .{key});
+                log.err("Parser: redefinition of key '{s}'", .{key});
                 return Error.DuplicateKey;
             }
         }
-        try self.dest_table.put(key, value);
+        try dest_table.put(key, value.*);
     }
 
     fn stripInitialNewline(slice: []const u8) []const u8 {
@@ -215,17 +228,18 @@ pub const Parser = struct {
     }
 
     fn trimEscapedNewlines(allocator: mem.Allocator, slice: []const u8) mem.Allocator.Error![]const u8 {
-        var str = try common.String8.initCapacity(allocator, slice.len);
-        var wr = str.writer();
+        var trimmed = try common.String8.initCapacity(allocator, slice.len);
+        errdefer trimmed.deinit();
+        var wr = trimmed.writer();
         var iter = mem.splitSequence(u8, slice, &[_]u8{'\\'});
-        wr.write(iter.first());
+        _ = wr.write(iter.first()) catch unreachable;
         while (iter.next()) |seq| {
             if (seq.len > 2 and seq[1] == '\\') {
                 // nothing to trim
-                str.append('\\') catch unreachable;
-                wr.write(seq);
+                trimmed.append('\\') catch unreachable;
+                _ = wr.write(seq) catch unreachable;
             }
-            var i = 0;
+            var i: usize = 0;
             for (seq) |byte| {
                 switch (byte) {
                     ' ', '\t', '\n', '\r' => {
@@ -237,11 +251,81 @@ pub const Parser = struct {
                 if (i != 0) {
                     if (mem.indexOf(u8, seq[0..i], &[_]u8{'\n'}) == null) {
                         // TODO: bad escape sequence
+                        return Error.InvalidStringEscape;
                     }
                 }
-                wr.write(seq[i..]) catch unreachable;
+                _ = wr.write(seq[i..]) catch unreachable;
             }
         }
+        return try trimmed.toOwnedSlice();
+    }
+
+    fn decodeEscaped(allocator: mem.Allocator, string: []const u8) (Parser.Error || mem.Allocator.Error)![]const u8 {
+        var decoded_str = try common.String8.initCapacity(allocator, string.len);
+        errdefer decoded_str.deinit();
+        var wr = decoded_str.writer();
+        var i: usize = 0;
+        while (i < string.len) {
+            const byte: u8 = string[i];
+            if (byte != '\\') {
+                try decoded_str.append(byte);
+                i += 1;
+                continue;
+            } else {
+                if (i + 1 >= string.len) {
+                    // reached the end before any escape.
+                    return Error.InvalidStringEscape;
+                }
+
+                const decoded_byte: u8 = switch (string[i + 1]) {
+                    'b' => 0x08,
+                    'f' => 0x0C, // Form feed
+                    'r' => '\r',
+                    'n' => '\n',
+                    't' => '\t',
+                    '"' => 0x22,
+                    '\\' => 0x5C,
+                    'u' => {
+                        debug.assert(i + 5 <= string.len);
+                        // lengths are validated by the lexer so just read ahead
+                        var codepoint: u32 = common.toUnicodeCodepoint(string[i + 2 .. i + 6]) catch |e| {
+                            log.err(
+                                "Parser: bad string escaped unicode codepoint, error={}\n",
+                                .{e},
+                            );
+                            return Error.InvalidStringEscape;
+                        };
+                        try wr.writeIntBig(u32, codepoint);
+                        i += 5;
+                        continue;
+                    },
+                    'U' => {
+                        debug.assert(i + 9 <= string.len);
+                        var codepoint: u32 = common.toUnicodeCodepoint(string[i + 2 .. i + 10]) catch |e| {
+                            log.err(
+                                "Parser: bad string escaped unicode codepoint, error={}\n",
+                                .{e},
+                            );
+                            return Error.InvalidStringEscape;
+                        };
+                        try wr.writeIntBig(u32, codepoint);
+                        i += 9;
+                        continue;
+                    },
+                    else => {
+                        log.err(
+                            "Parser: invalid Escape code found, '{}'\n",
+                            .{byte},
+                        );
+                        return Error.InvalidStringEscape;
+                    },
+                };
+                try decoded_str.append(decoded_byte);
+                i += 2;
+                continue;
+            }
+        }
+        return try decoded_str.toOwnedSlice();
     }
 
     fn parseDebug(self: *Self) !void {

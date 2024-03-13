@@ -215,7 +215,7 @@ pub const Lexer = struct {
             return;
         } else if (common.isWhiteSpace(b) or common.isNewLine(b)) {
             self.skipBytes(&[_]u8{ '\n', '\r', '\t', ' ' });
-            self.lexRoot(t);
+            self.lexTable(t);
             return;
         }
 
@@ -519,7 +519,7 @@ pub const Lexer = struct {
 
             switch (b) {
                 '"' => break,
-                '\\' => self.lexStringEscape(t) catch return,
+                '\\' => self.lexStringEscape(t) catch return, // TODO: decode while lexing.
                 else => self.token_buffer.append(b) catch {
                     self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
                     return;

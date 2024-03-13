@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const ascii = std.ascii;
+const unicode = std.unicode;
 const fmt = std.fmt;
 
 pub const Allocator = std.mem.Allocator;
@@ -9,7 +10,7 @@ pub const String8 = std.ArrayList(u8);
 
 /// Wrapper over std.ArrayList, makes it easy to expand the size.
 /// the destructor argument is a function used when clearing the array.
-pub fn DynArray(comptime T: type, comptime destructor: ?*fn (*T) void) type {
+pub fn DynArray(comptime T: type, comptime destructor: ?*const fn (*T) void) type {
     return struct {
         const Implementation = std.ArrayList(T);
         impl: Implementation,
@@ -73,6 +74,10 @@ pub fn DynArray(comptime T: type, comptime destructor: ?*fn (*T) void) type {
             }
             return &self.impl.items[index];
         }
+
+        pub fn size(self: *const Self) usize {
+            return self.impl.items.len;
+        }
     };
 }
 
@@ -119,4 +124,12 @@ pub inline fn isNewLine(byte: u8) bool {
 
 pub inline fn isBareKeyChar(c: u8) bool {
     return (ascii.isAlphanumeric(c) or c == '-' or c == '_');
+}
+
+pub inline fn toUnicodeCodepoint(bytes: []const u8) !u32 {
+    const codepoint = try fmt.parseInt(u21, bytes, 16);
+    if (!unicode.utf8ValidCodepoint(codepoint)) {
+        return error.InvalidUnicodeCodepoint;
+    }
+    return @intCast(codepoint);
 }

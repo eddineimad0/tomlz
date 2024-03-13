@@ -23,16 +23,16 @@ pub const TomlTable = struct {
     const Self = @This();
     const Iterator = StringHashMap(TomlValue).Iterator;
 
-    pub fn init(allocator: mem.Allocator) mem.Allocator!Self {
+    pub fn init(allocator: mem.Allocator) mem.Allocator.Error!Self {
         var map = StringHashMap(TomlValue).init(allocator);
-        map.ensureTotalCapacity(32);
+        try map.ensureTotalCapacity(32);
         return Self{
             .impl = map,
         };
     }
 
     pub fn deinit(self: *Self) void {
-        self.clear();
+        self.clearContent();
         self.impl.deinit();
     }
 
@@ -65,7 +65,7 @@ pub const TomlTable = struct {
 
 pub const TomlValue = union(TomlType) {
     Integer: isize,
-    String: common.String8,
+    String: []const u8,
     Float: f64,
     Boolean: bool,
     Array: common.DynArray(TomlValue, TomlValue.deinit),
@@ -75,7 +75,14 @@ pub const TomlValue = union(TomlType) {
     const Self = @This();
     pub fn deinit(self: *Self) void {
         switch (self.*) {
-            .String, .Array, .TablesArray, .Table => |*v| {
+            // BUG: currently we aren't deallocating the string
+            .Array => |*v| {
+                v.deinit();
+            },
+            .TablesArray => |*v| {
+                v.deinit();
+            },
+            .Table => |*v| {
                 v.deinit();
             },
             else => {},

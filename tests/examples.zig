@@ -6,19 +6,21 @@ var gpa_allocator = std.heap.GeneralPurposeAllocator(.{}){};
 
 fn parseTomlFile(f: fs.File) void {
     var ifs = io.StreamSource{ .file = f };
-    var p = toml.Parser.init(&ifs, gpa_allocator.allocator());
+    var p = toml.Parser.init(gpa_allocator.allocator(), &ifs) catch |e| {
+        std.debug.print("error={}", .{e});
+        return;
+    };
     defer p.deinit();
     var t = p.parse() catch {
         std.debug.print("\n[ERROR]\n", .{});
-        std.debug.print("\n{s}\n", .{p.errorMsg()});
         return;
     };
     printTable(t);
 }
 
-fn printArray(a: *const toml.TomlArray) void {
+fn printArray(a: anytype) void {
     for (0..a.size()) |i| {
-        const value = a.ptrAt(i);
+        const value = a.getOrNull(i).?;
         switch (value.*) {
             .String => |slice| {
                 std.debug.print("{s},", .{slice});
@@ -26,7 +28,7 @@ fn printArray(a: *const toml.TomlArray) void {
             .Boolean => |b| std.debug.print("{},", .{b}),
             .Integer => |int| std.debug.print("{d},", .{int}),
             .Float => |fl| std.debug.print("{d},", .{fl}),
-            .DateTime => |*ts| std.debug.print("{any},", .{ts.*}),
+            // .DateTime => |*ts| std.debug.print("{any},", .{ts.*}),
             .Table => |*table| {
                 std.debug.print("{{ ", .{});
                 printTable(table);
@@ -51,7 +53,7 @@ fn printTable(t: *const toml.TomlTable) void {
             .Boolean => |b| std.debug.print("{},", .{b}),
             .Integer => |i| std.debug.print("{d},", .{i}),
             .Float => |fl| std.debug.print("{d},", .{fl}),
-            .DateTime => |*ts| std.debug.print("{any},", .{ts.*}),
+            // .DateTime => |*ts| std.debug.print("{any},", .{ts.*}),
             .Array => |*a| {
                 std.debug.print("[ ", .{});
                 printArray(a);
@@ -66,7 +68,7 @@ fn printTable(t: *const toml.TomlTable) void {
                 std.debug.print("[ ", .{});
                 for (0..a.size()) |i| {
                     std.debug.print("{{ ", .{});
-                    printTable(a.ptrAt(i));
+                    printTable(a.getOrNull(i).?);
                     std.debug.print("}},", .{});
                 }
                 std.debug.print("]\n", .{});
