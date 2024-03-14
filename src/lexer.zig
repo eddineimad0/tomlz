@@ -744,8 +744,7 @@ pub const Lexer = struct {
             return error.BadStringEscape;
         };
 
-        var hex: [10]u8 = undefined;
-        hex[0] = '\\';
+        var hex: [8]u8 = undefined;
 
         const bytes: []const u8 = switch (b) {
             'b' => &[1]u8{0x08},
@@ -756,25 +755,26 @@ pub const Lexer = struct {
             '"' => &[1]u8{0x22},
             '\\' => &[1]u8{0x5C},
             'u' => {
-                if (!self.lexUnicodeEscape(t, 4, hex[2..])) {
+                if (!self.lexUnicodeEscape(t, 4, &hex)) {
                     // error already reported
                     return error.BadStringEscape;
                 }
                 // BUG: Unicode codepoint parsing is buggy.
-                var codepoint: u32 = common.toUnicodeCodepoint(hex[2..6]) catch {
+                var num_written: usize = common.toUnicodeCodepoint(hex[0..4]) catch {
                     return error.BasicStringEscape;
                 };
-                // log.debug("CODEPOINT={}|SLICE={s}\n", .{ codepoint, hex[2..6] });
-                var wr = self.token_buffer.writer();
-                try wr.writeIntBig(u32, codepoint);
+                try self.token_buffer.appendSlice(hex[0..num_written]);
                 return;
             },
             'U' => {
-                var codepoint: u32 = common.toUnicodeCodepoint(hex[2..]) catch {
+                if (!self.lexUnicodeEscape(t, 8, &hex)) {
+                    // error already reported
+                    return error.BadStringEscape;
+                }
+                var num_written: usize = common.toUnicodeCodepoint(&hex) catch {
                     return error.BasicStringEscape;
                 };
-                var wr = self.token_buffer.writer();
-                try wr.writeIntBig(u32, codepoint);
+                try self.token_buffer.appendSlice(hex[0..num_written]);
                 return;
             },
             else => {

@@ -130,10 +130,9 @@ pub inline fn isBareKeyChar(c: u8) bool {
     return (ascii.isAlphanumeric(c) or c == '-' or c == '_');
 }
 
-pub inline fn toUnicodeCodepoint(bytes: []const u8) !u32 {
+/// parses a the unicode codepoint in bytes, encodes it and store
+/// it back in bytes slice.
+pub inline fn toUnicodeCodepoint(bytes: []u8) !usize {
     const codepoint = try fmt.parseInt(u21, bytes, 16);
-    if (!unicode.utf8ValidCodepoint(codepoint)) {
-        return error.InvalidUnicodeCodepoint;
-    }
-    return @intCast(codepoint);
+    return try unicode.utf8Encode(codepoint, bytes);
 }
