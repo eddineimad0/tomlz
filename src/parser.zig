@@ -1,6 +1,7 @@
 const std = @import("std");
 const fmt = std.fmt;
 const mem = std.mem;
+const heap = std.heap;
 const io = std.io;
 const debug = std.debug;
 const log = std.log;
@@ -49,6 +50,8 @@ pub const Parser = struct {
     toml_src: *io.StreamSource,
     table_path: common.DynArray(types.Key, null),
     allocator: mem.Allocator,
+    key_arena: heap.ArenaAllocator,
+    strings_arena: heap.ArenaAllocator,
     implicit_tables: StringHashmap(void),
     root_table: types.TomlTable,
     current_table: *types.TomlTable,
@@ -77,6 +80,8 @@ pub const Parser = struct {
             .toml_src = toml_input,
             .implicit_tables = map,
             .allocator = allocator,
+            .key_arena = heap.ArenaAllocator.init(allocator),
+            .strings_arena = heap.ArenaAllocator.init(allocator),
             .root_table = try types.TomlTable.init(allocator),
             .current_key = "",
             .current_table = undefined,
@@ -87,10 +92,14 @@ pub const Parser = struct {
     /// you shouldn't attempt to use the parser after calling this function
     pub fn deinit(self: *Self) void {
         self.lexer.deinit();
-        // TODO: free content.
+        self.key_arena.deinit();
+        self.strings_arena.deinit();
         self.table_path.deinit();
         self.implicit_tables.deinit();
+        // TODO: free content.
         self.root_table.deinit();
+        self.current_table = undefined;
+        self.current_key = undefined;
     }
 
     pub fn parse(self: *Self) (mem.Allocator.Error || Parser.Error)!*const types.TomlTable {
@@ -112,7 +121,7 @@ pub const Parser = struct {
                 .TableStart => {},
                 .TableEnd => {},
                 .Key => {
-                    const key = try self.allocator.alloc(u8, token.value.?.len);
+                    const key = try self.key_arena.allocator().alloc(u8, token.value.?.len);
                     @memcpy(key, token.value.?);
                     self.current_key = key;
                 },
@@ -120,12 +129,13 @@ pub const Parser = struct {
                 .Boolean,
                 .Float,
                 .BasicString,
+                .LiteralString,
                 .MultiLineBasicString,
                 .MultiLineLiteralString,
                 .DateTime,
                 => {
                     var value: types.TomlValue = undefined;
-                    try parseValue(self.allocator, &token, &value);
+                    try parseValue(self.strings_arena.allocator(), &token, &value);
                     try self.putValue(&value);
                 },
                 .Dot => {
@@ -163,7 +173,10 @@ pub const Parser = struct {
                 v.* = types.TomlValue{ .Boolean = boolean };
             },
             .Float => {
-                // BUG: 7. and 3.e+20 are reconginzed as valid float where which deviate from the toml 1.0 spec
+                if (!isValidFloat(t.value.?)) {
+                    log.err("Parser: invalid float {s}", .{t.value.?});
+                    return Error.InvalidFloat;
+                }
                 const float = fmt.parseFloat(f64, t.value.?) catch |e| {
                     log.err("Parser: couldn't convert to float, input={s}, error={}\n", .{ t.value.?, e });
                     return Error.InvalidFloat;
@@ -171,13 +184,14 @@ pub const Parser = struct {
                 v.* = types.TomlValue{ .Float = float };
             },
             .BasicString => {
-                const string = try decodeEscaped(allocator, t.value.?);
+                const string = try allocator.alloc(u8, t.value.?.len);
+                @memcpy(string, t.value.?);
                 v.* = types.TomlValue{ .String = string };
             },
             .MultiLineBasicString => {
-                const trimmed = try trimEscapedNewlines(allocator, stripInitialNewline(t.value.?));
-                defer allocator.free(trimmed);
-                const string = try decodeEscaped(allocator, trimmed);
+                const string = try trimEscapedNewlines(allocator, stripInitialNewline(t.value.?));
+                // defer allocator.free(trimmed);
+                // const string = try decodeEscaped(allocator, trimmed);
                 v.* = types.TomlValue{ .String = string };
             },
             .LiteralString => {
@@ -187,8 +201,8 @@ pub const Parser = struct {
                 v.* = types.TomlValue{ .String = string };
             },
             .MultiLineLiteralString => {
-                const string = try allocator.alloc(u8, t.value.?.len);
                 const slice = stripInitialNewline(t.value.?);
+                const string = try allocator.alloc(u8, slice.len);
                 @memcpy(string, slice);
                 v.* = types.TomlValue{ .String = string };
             },
@@ -199,11 +213,44 @@ pub const Parser = struct {
         }
     }
 
+    /// Processes the table_path array, creating the appropriate table for each key and returns
+    /// the final table into which the current_key should be inserted.
+    fn walkKeyPath(self: *Self) (mem.Allocator.Error || Parser.Error)!*types.TomlTable {
+        var temp = self.current_table;
+        for (self.table_path.data()) |table_name| {
+            if (temp.getMutOrNull(table_name)) |value| {
+                switch (value.*) {
+                    .Table => |*t| temp = t,
+                    .TablesArray => |*ta| {
+                        const size = ta.size();
+                        if (size > 0) {
+                            temp = ta.getOrNull(size - 1).?;
+                        } else {
+                            // TODO: handle cases where the array is empty.
+                        }
+                    },
+                    else => {
+                        log.err("Parser: key {s} is neither a table nor an arrays of tables", .{table_name});
+                        return Error.DuplicateKey;
+                    },
+                }
+            } else {
+                try temp.put(
+                    table_name,
+                    types.TomlValue{ .Table = try types.TomlTable.init(self.allocator) },
+                );
+                try self.implicit_tables.put(table_name, {});
+                temp = &temp.getMutOrNull(table_name).?.Table;
+            }
+        }
+        self.table_path.clearContent();
+        return temp;
+    }
+
     fn putValue(self: *Self, value: *types.TomlValue) (mem.Allocator.Error || Parser.Error)!void {
-        // BUG: walk table path before putting values.
         const key = self.current_key;
-        var dest_table = self.current_table;
-        if (self.current_table.getMutOrNull(key)) |v| {
+        var dest_table = try self.walkKeyPath();
+        if (dest_table.getMutOrNull(key)) |v| {
             // possibly a duplicate key
             if (self.implicit_tables.contains(key)) {
                 // make it explicit
@@ -260,72 +307,84 @@ pub const Parser = struct {
         return try trimmed.toOwnedSlice();
     }
 
-    fn decodeEscaped(allocator: mem.Allocator, string: []const u8) (Parser.Error || mem.Allocator.Error)![]const u8 {
-        var decoded_str = try common.String8.initCapacity(allocator, string.len);
-        errdefer decoded_str.deinit();
-        var wr = decoded_str.writer();
-        var i: usize = 0;
-        while (i < string.len) {
-            const byte: u8 = string[i];
-            if (byte != '\\') {
-                try decoded_str.append(byte);
-                i += 1;
-                continue;
-            } else {
-                if (i + 1 >= string.len) {
-                    // reached the end before any escape.
-                    return Error.InvalidStringEscape;
-                }
+    // fn decodeEscaped(allocator: mem.Allocator, string: []const u8) (Parser.Error || mem.Allocator.Error)![]const u8 {
+    //     var decoded_str = try common.String8.initCapacity(allocator, string.len);
+    //     errdefer decoded_str.deinit();
+    //     var wr = decoded_str.writer();
+    //     var i: usize = 0;
+    //     while (i < string.len) {
+    //         const byte: u8 = string[i];
+    //         if (byte != '\\') {
+    //             try decoded_str.append(byte);
+    //             i += 1;
+    //             continue;
+    //         } else {
+    //             if (i + 1 >= string.len) {
+    //                 // reached the end before any escape.
+    //                 return Error.InvalidStringEscape;
+    //             }
+    //
+    //             const decoded_byte: u8 = switch (string[i + 1]) {
+    //                 'b' => 0x08,
+    //                 'f' => 0x0C, // Form feed
+    //                 'r' => '\r',
+    //                 'n' => '\n',
+    //                 't' => '\t',
+    //                 '"' => 0x22,
+    //                 '\\' => 0x5C,
+    //                 'u' => {
+    //                     debug.assert(i + 5 <= string.len);
+    //                     // lengths are validated by the lexer so just read ahead
+    //                     var codepoint: u32 = common.toUnicodeCodepoint(string[i + 2 .. i + 6]) catch |e| {
+    //                         log.err(
+    //                             "Parser: bad string escaped unicode codepoint, error={}\n",
+    //                             .{e},
+    //                         );
+    //                         return Error.InvalidStringEscape;
+    //                     };
+    //                     try wr.writeIntBig(u32, codepoint);
+    //                     i += 5;
+    //                     continue;
+    //                 },
+    //                 'U' => {
+    //                     debug.assert(i + 9 <= string.len);
+    //                     var codepoint: u32 = common.toUnicodeCodepoint(string[i + 2 .. i + 10]) catch |e| {
+    //                         log.err(
+    //                             "Parser: bad string escaped unicode codepoint, error={}\n",
+    //                             .{e},
+    //                         );
+    //                         return Error.InvalidStringEscape;
+    //                     };
+    //                     try wr.writeIntBig(u32, codepoint);
+    //                     i += 9;
+    //                     continue;
+    //                 },
+    //                 else => {
+    //                     log.err(
+    //                         "Parser: invalid Escape code found, '{}'\n",
+    //                         .{byte},
+    //                     );
+    //                     return Error.InvalidStringEscape;
+    //                 },
+    //             };
+    //             try decoded_str.append(decoded_byte);
+    //             i += 2;
+    //             continue;
+    //         }
+    //     }
+    //     return try decoded_str.toOwnedSlice();
+    // }
 
-                const decoded_byte: u8 = switch (string[i + 1]) {
-                    'b' => 0x08,
-                    'f' => 0x0C, // Form feed
-                    'r' => '\r',
-                    'n' => '\n',
-                    't' => '\t',
-                    '"' => 0x22,
-                    '\\' => 0x5C,
-                    'u' => {
-                        debug.assert(i + 5 <= string.len);
-                        // lengths are validated by the lexer so just read ahead
-                        var codepoint: u32 = common.toUnicodeCodepoint(string[i + 2 .. i + 6]) catch |e| {
-                            log.err(
-                                "Parser: bad string escaped unicode codepoint, error={}\n",
-                                .{e},
-                            );
-                            return Error.InvalidStringEscape;
-                        };
-                        try wr.writeIntBig(u32, codepoint);
-                        i += 5;
-                        continue;
-                    },
-                    'U' => {
-                        debug.assert(i + 9 <= string.len);
-                        var codepoint: u32 = common.toUnicodeCodepoint(string[i + 2 .. i + 10]) catch |e| {
-                            log.err(
-                                "Parser: bad string escaped unicode codepoint, error={}\n",
-                                .{e},
-                            );
-                            return Error.InvalidStringEscape;
-                        };
-                        try wr.writeIntBig(u32, codepoint);
-                        i += 9;
-                        continue;
-                    },
-                    else => {
-                        log.err(
-                            "Parser: invalid Escape code found, '{}'\n",
-                            .{byte},
-                        );
-                        return Error.InvalidStringEscape;
-                    },
-                };
-                try decoded_str.append(decoded_byte);
-                i += 2;
-                continue;
-            }
+    fn isValidFloat(slice: []const u8) bool {
+        var valid = true;
+        // period check.
+        // 7. and 3.e+20 are not valid float in toml 1.0 spec
+        if (mem.indexOf(u8, slice, &[_]u8{'.'})) |index| {
+            valid = valid and (slice.len > index + 1 and common.isDigit(slice[index + 1]));
+            valid = valid and (index > 0 and common.isDigit(slice[index - 1]));
         }
-        return try decoded_str.toOwnedSlice();
+
+        return valid;
     }
 
     fn parseDebug(self: *Self) !void {

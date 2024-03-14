@@ -75,8 +75,12 @@ pub fn DynArray(comptime T: type, comptime destructor: ?*const fn (*T) void) typ
             return &self.impl.items[index];
         }
 
-        pub fn size(self: *const Self) usize {
+        pub inline fn size(self: *const Self) usize {
             return self.impl.items.len;
+        }
+
+        pub inline fn writer(self: *Self) Implementation.Writer {
+            return self.impl.writer();
         }
     };
 }

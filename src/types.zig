@@ -38,10 +38,9 @@ pub const TomlTable = struct {
 
     /// Clears the table and frees any allocated resources.
     pub fn clearContent(self: *Self) void {
-        const allocator = self.impl.allocator;
+        // keys are deallocated by the parser's arena allocator.
         var it = self.impl.iterator();
         while (it.next()) |e| {
-            allocator.free(e.key_ptr.*);
             e.value_ptr.deinit();
         }
     }
@@ -75,6 +74,7 @@ pub const TomlValue = union(TomlType) {
     const Self = @This();
     pub fn deinit(self: *Self) void {
         switch (self.*) {
+            // Strings are owned and deallocated by the parser.
             // BUG: currently we aren't deallocating the string
             .Array => |*v| {
                 v.deinit();

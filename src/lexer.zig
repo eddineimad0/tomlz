@@ -37,6 +37,10 @@ pub const TokenType = enum {
     Error,
 };
 
+/// Type used to report lexer findings.
+/// the value when not null points to meaningfull data (keys,values,...etc)
+/// that is owned by the lexer and will be cleared withe each call to Lexer.nextToken(),
+/// and therefore should be copied before use.
 pub const Token = struct {
     type: TokenType,
     value: ?[]const u8,
@@ -347,6 +351,7 @@ pub const Lexer = struct {
     /// Handles lexing a key and calls the next appropriate function
     /// this function assumes that there is at least one byte in the stream
     fn lexKey(self: *Self, t: *Token) void {
+        self.skipBytes(&[_]u8{ ' ', '\t' });
         const b = self.peekByte() catch unreachable;
         self.pushStateOrStop(lexKeyEnd, t);
         switch (b) {
@@ -419,14 +424,15 @@ pub const Lexer = struct {
         assert(current == lexQuottedKey);
         const b = self.nextByte() catch unreachable;
         switch (b) {
-            '"' => self.pushStateOrStop(lexBasicString, t),
-            '\'' => self.pushStateOrStop(lexLiteralString, t),
+            '"' => self.pushStateOrStop(lexString(.Key).lexBasicString, t),
+            '\'' => self.pushStateOrStop(lexString(.Key).lexLiteralString, t),
             else => unreachable,
         }
     }
 
     fn lexValue(self: *Self, t: *Token) void {
         _ = self.popState();
+        self.pushStateOrStop(lexValueEnd, t);
         self.skipBytes(&[_]u8{ ' ', '\t' });
         const b = self.nextByte() catch {
             const err_msg = self.formatError("Lexer: expected a value before reaching end of stream", .{});
@@ -456,7 +462,7 @@ pub const Lexer = struct {
                         self.toLastByte();
                     }
                 }
-                self.pushStateOrStop(lexBasicString, t);
+                self.pushStateOrStop(lexString(.BasicString).lexBasicString, t);
             },
             '\'' => {
                 if (self.consumeByte('\'')) {
@@ -467,7 +473,7 @@ pub const Lexer = struct {
                         self.toLastByte();
                     }
                 }
-                self.pushStateOrStop(lexLiteralString, t);
+                self.pushStateOrStop(lexString(.LiteralString).lexLiteralString, t);
             },
             'i', 'n' => {
                 self.toLastByte();
@@ -492,43 +498,99 @@ pub const Lexer = struct {
         }
     }
 
-    /// lex the string content between it's delimiters '"'.
-    fn lexBasicString(self: *Self, t: *Token) void {
-        while (true) {
-            const b = self.nextByte() catch {
-                const err_msg = self.formatError(
-                    "Lexer: reached end of stream before string delimiter \" ",
-                    .{},
-                );
-                self.emit(t, .Error, err_msg, &self.lex_start);
+    /// consumes and validate the newline after the key/value pair.
+    fn lexValueEnd(self: *Self, t: *Token) void {
+        _ = self.popState();
+        self.skipBytes(&[_]u8{ ' ', '\t', '\r' });
+        const b = self.nextByte() catch return;
+        switch (b) {
+            '\n' => return,
+            else => {
+                const err_msg = self.formatError("Lexer: expected newline after key/value pair found '{c}'", .{b});
+                self.emit(t, .Error, err_msg, &self.prev_position);
                 return;
-            };
-            if (common.isNewLine(b)) {
-                const err_msg = self.formatError(
-                    "Lexer: basic string can't contain a newline character 0x{X:0>2}",
-                    .{b},
-                );
-                self.emit(t, .Error, err_msg, &self.lex_start);
-                return;
-            }
-            if (common.isControl(b)) {
-                const err_msg = self.formatError("Lexer: control character '{}' not allowed in basic strings", .{b});
-                self.emit(t, .Error, err_msg, &self.lex_start);
-                return;
+            },
+        }
+    }
+
+    fn lexString(comptime token_type: TokenType) type {
+        return struct {
+            /// lex the string content between it's delimiters '"'.
+            fn lexBasicString(self: *Self, t: *Token) void {
+                while (true) {
+                    const b = self.nextByte() catch {
+                        const err_msg = self.formatError(
+                            "Lexer: reached end of stream before string delimiter \" ",
+                            .{},
+                        );
+                        self.emit(t, .Error, err_msg, &self.lex_start);
+                        return;
+                    };
+                    if (common.isNewLine(b)) {
+                        const err_msg = self.formatError(
+                            "Lexer: basic string can't contain a newline character 0x{X:0>2}",
+                            .{b},
+                        );
+                        self.emit(t, .Error, err_msg, &self.lex_start);
+                        return;
+                    }
+                    if (common.isControl(b)) {
+                        const err_msg = self.formatError("Lexer: control character '{}' not allowed in basic strings", .{b});
+                        self.emit(t, .Error, err_msg, &self.lex_start);
+                        return;
+                    }
+
+                    switch (b) {
+                        '"' => break,
+                        '\\' => self.lexStringEscape(t) catch return,
+                        else => self.token_buffer.append(b) catch {
+                            self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                            return;
+                        },
+                    }
+                }
+                const current = self.popState();
+                assert(current == lexBasicString);
+                self.emit(t, token_type, self.token_buffer.data(), &self.lex_start);
             }
 
-            switch (b) {
-                '"' => break,
-                '\\' => self.lexStringEscape(t) catch return, // TODO: decode while lexing.
-                else => self.token_buffer.append(b) catch {
-                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
-                    return;
-                },
+            /// lex the string content between it's delimiters `'`.
+            fn lexLiteralString(self: *Self, t: *Token) void {
+                while (true) {
+                    const b = self.nextByte() catch {
+                        const err_msg = self.formatError(
+                            "Lexer: reached end of stream before string delimiter ' ",
+                            .{},
+                        );
+                        self.emit(t, .Error, err_msg, &self.lex_start);
+                        return;
+                    };
+                    if (common.isControl(b)) {
+                        const err_msg = self.formatError("Lexer: control character '{}' not allowed in litteral strings", .{b});
+                        self.emit(t, .Error, err_msg, &self.lex_start);
+                        return;
+                    }
+                    if (common.isNewLine(b)) {
+                        const err_msg = self.formatError(
+                            "Lexer: litteral string can't contain a newline character 0x{X:0>2}",
+                            .{b},
+                        );
+                        self.emit(t, .Error, err_msg, &self.lex_start);
+                        return;
+                    }
+                    switch (b) {
+                        '\'' => break,
+                        else => self.token_buffer.append(b) catch {
+                            self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                            return;
+                        },
+                    }
+                }
+                const current = self.popState();
+                assert(current == lexLiteralString);
+                self.emit(t, token_type, self.token_buffer.data(), &self.lex_start);
             }
-        }
-        const current = self.popState();
-        assert(current == lexBasicString);
-        self.emit(t, .BasicString, self.token_buffer.data(), &self.lex_start);
+        };
     }
 
     fn lexMultiLineBasicString(self: *Self, t: *Token) void {
@@ -582,43 +644,6 @@ pub const Lexer = struct {
         const current = self.popState();
         assert(current == lexMultiLineBasicString);
         self.emit(t, .MultiLineBasicString, self.token_buffer.data(), &self.lex_start);
-    }
-
-    /// lex the string content between it's delimiters `'`.
-    fn lexLiteralString(self: *Self, t: *Token) void {
-        while (true) {
-            const b = self.nextByte() catch {
-                const err_msg = self.formatError(
-                    "Lexer: reached end of stream before string delimiter ' ",
-                    .{},
-                );
-                self.emit(t, .Error, err_msg, &self.lex_start);
-                return;
-            };
-            if (common.isControl(b)) {
-                const err_msg = self.formatError("Lexer: control character '{}' not allowed in litteral strings", .{b});
-                self.emit(t, .Error, err_msg, &self.lex_start);
-                return;
-            }
-            if (common.isNewLine(b)) {
-                const err_msg = self.formatError(
-                    "Lexer: litteral string can't contain a newline character 0x{X:0>2}",
-                    .{b},
-                );
-                self.emit(t, .Error, err_msg, &self.lex_start);
-                return;
-            }
-            switch (b) {
-                '\'' => break,
-                else => self.token_buffer.append(b) catch {
-                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
-                    return;
-                },
-            }
-        }
-        const current = self.popState();
-        assert(current == lexLiteralString);
-        self.emit(t, .LiteralString, self.token_buffer.data(), &self.lex_start);
     }
 
     fn lexMultiLineLiteralString(self: *Self, t: *Token) void {
@@ -698,6 +723,7 @@ pub const Lexer = struct {
 
     /// Called when encountering a string escape sequence
     /// assumes '\' is already consumed
+    /// decodes the string escapes while lexing.
     fn lexStringEscape(self: *Self, t: *Token) !void {
         const b = self.nextByte() catch {
             const err_msg = self.formatError(
@@ -712,36 +738,32 @@ pub const Lexer = struct {
         hex[0] = '\\';
 
         const bytes: []const u8 = switch (b) {
-            'b' => &[2]u8{ '\\', 'b' },
-            'r' => &[2]u8{ '\\', 'r' },
-            'n' => &[2]u8{ '\\', 'n' },
-            't' => &[2]u8{ '\\', 't' },
-            'f' => &[2]u8{ '\\', 'f' },
-            '"' => &[2]u8{ '\\', '"' },
-            '\\' => &[2]u8{ '"', '"' },
-            'x' => blk: {
-                hex[1] = 'x';
-                if (!self.lexHexEscape(t, hex[2..])) {
-                    // error already reported
-                    return error.BadStringEscape;
-                }
-                break :blk hex[0..4];
-            },
-            'u' => blk: {
-                hex[1] = 'u';
+            'b' => &[1]u8{0x08},
+            'r' => &[1]u8{'\r'},
+            'n' => &[1]u8{'\n'},
+            't' => &[1]u8{'\t'},
+            'f' => &[1]u8{0x0C},
+            '"' => &[1]u8{0x22},
+            '\\' => &[1]u8{0x5C},
+            'u' => {
                 if (!self.lexUnicodeEscape(t, 4, hex[2..])) {
                     // error already reported
                     return error.BadStringEscape;
                 }
-                break :blk hex[0..6];
+                var codepoint: u32 = common.toUnicodeCodepoint(hex[2..6]) catch {
+                    return error.BasicStringEscape;
+                };
+                var wr = self.token_buffer.writer();
+                try wr.writeIntBig(u32, codepoint);
+                return;
             },
-            'U' => blk: {
-                hex[1] = 'U';
-                if (!self.lexUnicodeEscape(t, 8, hex[2..])) {
-                    // error already reported
-                    return error.BadStringEscape;
-                }
-                break :blk hex[0..10];
+            'U' => {
+                var codepoint: u32 = common.toUnicodeCodepoint(hex[2..]) catch {
+                    return error.BasicStringEscape;
+                };
+                var wr = self.token_buffer.writer();
+                try wr.writeIntBig(u32, codepoint);
+                return;
             },
             else => {
                 const err_msg = self.formatError(
@@ -1316,12 +1338,12 @@ pub const Lexer = struct {
         if (f == lexQuottedKey) {
             return "lexQuottedKey";
         }
-        if (f == lexLiteralString) {
-            return "lexLiteralString";
-        }
-        if (f == lexBasicString) {
-            return "lexBasicString";
-        }
+        // if (f == lexLiteralString) {
+        //     return "lexLiteralString";
+        // }
+        // if (f == lexBasicString) {
+        //     return "lexBasicString";
+        // }
         if (f == lexBareKey) {
             return "lexBareKey";
         }
@@ -1329,7 +1351,7 @@ pub const Lexer = struct {
             return "lexBoolean";
         }
         if (f == lexKey) {
-            return "lexKeyStart";
+            return "lexKey";
         }
         if (f == lexKeyEnd) {
             return "lexKeyEnd";
