@@ -275,6 +275,7 @@ pub const Parser = struct {
     }
 
     fn trimEscapedNewlines(allocator: mem.Allocator, slice: []const u8) mem.Allocator.Error![]const u8 {
+        // BUG: white space isn't escaped.
         var trimmed = try common.String8.initCapacity(allocator, slice.len);
         errdefer trimmed.deinit();
         var wr = trimmed.writer();

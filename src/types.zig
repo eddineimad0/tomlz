@@ -75,7 +75,6 @@ pub const TomlValue = union(TomlType) {
     pub fn deinit(self: *Self) void {
         switch (self.*) {
             // Strings are owned and deallocated by the parser.
-            // BUG: currently we aren't deallocating the string
             .Array => |*v| {
                 v.deinit();
             },

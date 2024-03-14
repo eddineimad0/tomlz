@@ -504,6 +504,7 @@ pub const Lexer = struct {
         self.skipBytes(&[_]u8{ ' ', '\t', '\r' });
         const b = self.nextByte() catch return;
         switch (b) {
+            '#' => self.pushStateOrStop(lexComment, t),
             '\n' => return,
             else => {
                 const err_msg = self.formatError("Lexer: expected newline after key/value pair found '{c}'", .{b});
@@ -515,6 +516,7 @@ pub const Lexer = struct {
 
     fn lexString(comptime token_type: TokenType) type {
         return struct {
+            // BUG: `'` aren't processed correctly.
             /// lex the string content between it's delimiters '"'.
             fn lexBasicString(self: *Self, t: *Token) void {
                 while (true) {
@@ -633,6 +635,10 @@ pub const Lexer = struct {
                             self.toLastByte();
                         }
                     }
+                    self.token_buffer.append(b) catch {
+                        self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                        return;
+                    };
                 },
                 '\\' => self.lexMultiLineStringEscape(t) catch return,
                 else => self.token_buffer.append(b) catch {
@@ -686,6 +692,10 @@ pub const Lexer = struct {
                             self.toLastByte();
                         }
                     }
+                    self.token_buffer.append(b) catch {
+                        self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                        return;
+                    };
                 },
                 else => self.token_buffer.append(b) catch {
                     self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
@@ -750,9 +760,11 @@ pub const Lexer = struct {
                     // error already reported
                     return error.BadStringEscape;
                 }
+                // BUG: Unicode codepoint parsing is buggy.
                 var codepoint: u32 = common.toUnicodeCodepoint(hex[2..6]) catch {
                     return error.BasicStringEscape;
                 };
+                // log.debug("CODEPOINT={}|SLICE={s}\n", .{ codepoint, hex[2..6] });
                 var wr = self.token_buffer.writer();
                 try wr.writeIntBig(u32, codepoint);
                 return;
@@ -1376,6 +1388,9 @@ pub const Lexer = struct {
         }
         if (f == lexValue) {
             return "lexValue";
+        }
+        if (f == lexValueEnd) {
+            return "lexValueEnd";
         }
         if (f == lexArrayValue) {
             return "lexArrayValue";
