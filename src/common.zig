@@ -10,7 +10,7 @@ pub const String8 = std.ArrayList(u8);
 
 /// Wrapper over std.ArrayList, makes it easy to expand the size.
 /// the destructor argument is a function used when clearing the array.
-pub fn DynArray(comptime T: type, comptime destructor: ?*const fn (*T) void) type {
+pub fn DynArray(comptime T: type) type {
     return struct {
         const Implementation = std.ArrayList(T);
         impl: Implementation,
@@ -50,16 +50,17 @@ pub fn DynArray(comptime T: type, comptime destructor: ?*const fn (*T) void) typ
         }
 
         pub inline fn clearContent(self: *Self) void {
-            if (destructor) |destroy| {
-                for (self.impl.items) |*item| {
-                    destroy(item);
-                }
-            }
             self.impl.clearRetainingCapacity();
         }
 
         pub inline fn data(self: *const Self) []const T {
             return self.impl.items;
+        }
+
+        pub inline fn getLastOrNull(self: *Self) ?*T {
+            if (self.impl.items.len == 0) return null;
+
+            return &self.impl.items[self.impl.items.len - 1];
         }
 
         pub inline fn print(self: *Self, comptime format: []const u8, args: anytype) !void {
@@ -147,4 +148,78 @@ pub inline fn isBareKeyChar(c: u8) bool {
 pub inline fn toUnicodeCodepoint(bytes: []u8) !usize {
     const codepoint = try fmt.parseInt(u21, bytes, 16);
     return try unicode.utf8Encode(codepoint, bytes);
+}
+
+/// Intended for fast parsing of a sequence of ascii digits in base 10.
+/// Negative numbers aren't supported.
+/// use only to parse toml date or timestamp.
+pub fn parseDigits(comptime T: type, buff: []const u8) error{NotANumber}!T {
+    switch (@typeInfo(T)) {
+        .Int => |IntType| switch (IntType.signedness) {
+            .unsigned => {},
+            .signed => @compileError("parseDigits doesn't support signed integers"),
+        },
+        else => @compileError("parseDigits only support unsigned integers"),
+    }
+    var num: T = @as(T, 0);
+    for (0..buff.len) |i| {
+        if (!ascii.isDigit(buff[i])) {
+            return error.NotANumber;
+        }
+        num *= 10;
+        num += (buff[i] - '0');
+    }
+    return num;
+}
+
+pub inline fn isDateValid(year: u16, month: u8, day: u8) bool {
+    if (month > 12) {
+        return false;
+    }
+
+    // This assumes that the year is a 4 digits year.
+    const year_by_100 = @rem(year, 100);
+    var is_leap = (year >> 2 == 0 and (year_by_100 != 0 or year_by_100 >> 2 == 0));
+
+    switch (month) {
+        2 => {
+            if (day > 29) {
+                return false;
+            } else if (!is_leap and day > 28) {
+                return false;
+            }
+        },
+        4, 6, 9, 11 => {
+            if (day > 30) {
+                return false;
+            }
+        },
+        else => {
+            if (day > 32) {
+                return false;
+            }
+        },
+    }
+    return true;
+}
+
+pub inline fn isTimeValid(hour: u8, minute: u8, second: u8) bool {
+    if (hour > 23 or minute > 59 or second > 59) {
+        return false;
+    }
+    return true;
+}
+
+pub fn parseNanoSeconds(src: []const u8, ns: *u32) usize {
+    ns.* = 0;
+    var offset: u32 = 100000000;
+    for (0..src.len) |i| {
+        if (ascii.isDigit(src[i])) {
+            ns.* = ns.* + (src[i] - '0') * offset;
+            offset /= 10;
+        } else {
+            return i;
+        }
+    }
+    return src.len;
 }

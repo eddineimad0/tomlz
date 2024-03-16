@@ -9,27 +9,36 @@ const StringHashMap = std.StringHashMap;
 pub const Key = []const u8;
 
 pub const LocalDate = struct {
-    year: u16,
-    month: u8,
-    day: u8,
+    year: u16, // 4DIGIT
+    month: u8, // 2DIGIT  ; 01-12
+    day: u8, //2DIGIT  ; 01-28, 01-29, 01-30, 01-31 based on month/year
 };
 
 pub const LocalTime = struct {
     hour: u8, // [0,24)
     minute: u8, // [0,60)
     second: u8, // [0,60)
-    nana_second: u32, // [0,1000000000)
+    nano_second: u32, // [0,1000000000)
     precision: u32, // nano_seconds precision.
 };
 
 pub const LocalDateTime = struct {
-    usingnamespace LocalDate;
-    usingnamespace LocalTime;
-    // date: LocalDate,
-    // time: LocalTime,
+    // usingnamespace LocalDate;
+    // usingnamespace LocalTime;
+    date: ?LocalDate,
+    time: ?LocalTime,
 };
 
-pub const TomlType = enum { Integer, String, Float, Boolean, Array, Table, TablesArray, DateTime };
+pub const TomlType = enum {
+    Integer,
+    String,
+    Float,
+    Boolean,
+    DateTime,
+    Array,
+    Table,
+    TablesArray,
+};
 
 pub const TomlTable = StringHashMap(TomlValue);
 

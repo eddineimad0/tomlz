@@ -99,22 +99,9 @@ pub fn main() !void {
 
     var walker = try examples_dir.walk(allocator);
     defer walker.deinit();
+
     while (try walker.next()) |*entry| {
         switch (entry.kind) {
-            .directory => {
-                var sub_dir = try examples_dir.dir.openIterableDir(entry.path, .{});
-                defer sub_dir.close();
-                var file_walker = try sub_dir.walk(allocator);
-                defer file_walker.deinit();
-                while (try file_walker.next()) |*file_entry| {
-                    if (file_entry.kind == .file) {
-                        var example = try sub_dir.dir.openFile(file_entry.path, .{});
-                        defer example.close();
-                        std.debug.print("\n========= Testing file {s} ===========\n", .{file_entry.path});
-                        parseTomlFile(example);
-                    }
-                }
-            },
             .file => {
                 var example = try examples_dir.dir.openFile(entry.path, .{});
                 defer example.close();

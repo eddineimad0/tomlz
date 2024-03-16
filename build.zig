@@ -82,11 +82,26 @@ fn prepareBuildOptions(b: *std.Build) *std.Build.Module {
         "Specify the initial token buffer size used by the lexer.",
     ) orelse 1024;
 
+    const default_array_size = b.option(
+        usize,
+        "toml_default_array_size",
+        "Specify the initial size for toml arrays when parsing.",
+    ) orelse 16;
+
+    const default_hashmap_size = b.option(
+        usize,
+        "toml_default_hashmap_size",
+        "Specify the size of toml tables when parsing.",
+    ) orelse 32;
+
     const options = b.addOptions();
     options.addOption(u8, "MAX_NESTTING_LEVEL", max_nestting_allowed);
     options.addOption(bool, "LOG_LEXER_STATE", log_lexer_state);
     options.addOption(bool, "EMIT_COMMENT_TOKEN", lexer_emit_comment);
     options.addOption(usize, "LEXER_BUFFER_SIZE", lexer_buffer_size);
+    options.addOption(usize, "DEFAULT_ARRAY_SIZE", default_array_size);
+    options.addOption(usize, "DEFAULT_HASHMAP_SIZE", default_hashmap_size);
+
     const options_module = options.createModule();
     return options_module;
 }

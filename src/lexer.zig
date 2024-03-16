@@ -1,10 +1,12 @@
 const std = @import("std");
 const opt = @import("build_options");
+const common = @import("common.zig");
+
 const io = std.io;
 const mem = std.mem;
 const fmt = std.fmt;
 const log = std.log;
-const common = @import("common.zig");
+
 const assert = std.debug.assert;
 const Stack = std.ArrayList;
 
@@ -60,7 +62,7 @@ pub const Lexer = struct {
     prev_position: common.Position,
     // BUG: the value doesn't chage or update.
     lex_start: common.Position, // position from where we started lexing the current token.
-    token_buffer: common.DynArray(u8, null),
+    token_buffer: common.DynArray(u8),
     state_func_stack: Stack(?LexFuncPtr),
 
     const Self = @This();
@@ -1117,27 +1119,26 @@ pub const Lexer = struct {
 
     fn lexDateTime(self: *Self, t: *Token) void {
         while (true) {
-            const b = self.nextByte() catch break;
+            var b = self.peekByte() catch break;
 
-            switch (b) {
+            b = switch (b) {
                 '0'...'9',
                 ':',
                 'T',
-                't',
-                ' ',
-                '.',
                 'Z',
-                'z',
                 '+',
                 '-',
-                => {
-                    self.token_buffer.append(b) catch {
-                        self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
-                        return;
-                    };
-                },
+                '.',
+                => b,
+                ' ', 't' => 'T', // simplify the parser job
+                'z' => 'Z',
                 else => break,
-            }
+            };
+            self.token_buffer.append(b) catch {
+                self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                return;
+            };
+            _ = self.nextByte() catch unreachable;
         }
 
         const current = self.popState();
@@ -1429,7 +1430,7 @@ pub const Lexer = struct {
             .prev_position = .{ .line = 1, .offset = 0 },
             .position = .{ .line = 1, .offset = 0 },
             .lex_start = .{ .line = 1, .offset = 0 },
-            .token_buffer = try common.DynArray(u8, null).initCapacity(
+            .token_buffer = try common.DynArray(u8).initCapacity(
                 allocator,
                 opt.LEXER_BUFFER_SIZE,
             ),
