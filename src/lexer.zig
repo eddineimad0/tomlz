@@ -14,7 +14,7 @@ const LOG_LEXER_STATE = opt.LOG_LEXER_STATE;
 // for numbers such as integers and floats it only validates that they don't contain any
 // non permissable characters, the parser should make sure the values are valid for the type.
 pub const TokenType = enum {
-    EOF,
+    EOS, // End of Stream.
     Key,
     Dot,
     Comment, // The lexer won't inlucde the newline byte in the comment value.
@@ -65,7 +65,6 @@ pub const Lexer = struct {
 
     const Self = @This();
     const LexFuncPtr = *const fn (self: *Self, t: *Token) void;
-    const EOF: u8 = 0;
     const ERR_MSG_GENERIC: []const u8 = "Lexer: Encounterd an error.";
     const ERR_MSG_OUT_OF_MEMORY: []const u8 = "Lexer: Ran out of memory.";
     const EMIT_FUNC: ?LexFuncPtr = null;
@@ -209,7 +208,7 @@ pub const Lexer = struct {
 
     fn lexTable(self: *Self, t: *Token) void {
         const b = self.nextByte() catch {
-            self.emit(t, .EOF, null, &self.position);
+            self.emit(t, .EOS, null, &self.position);
             return;
         };
 
@@ -232,6 +231,7 @@ pub const Lexer = struct {
             },
             else => {
                 self.toLastByte();
+                self.pushStateOrStop(lexKeyValueEnd, t);
                 self.pushStateOrStop(lexKey, t);
             },
         }
@@ -396,7 +396,7 @@ pub const Lexer = struct {
         }
     }
 
-    /// lex a bare key.
+    /// Lex a bare key.
     fn lexBareKey(self: *Self, t: *Token) void {
         while (true) {
             const b = self.nextByte() catch {
@@ -432,7 +432,6 @@ pub const Lexer = struct {
 
     fn lexValue(self: *Self, t: *Token) void {
         _ = self.popState();
-        self.pushStateOrStop(lexValueEnd, t);
         self.skipBytes(&[_]u8{ ' ', '\t' });
         const b = self.nextByte() catch {
             const err_msg = self.formatError("Lexer: expected a value before reaching end of stream", .{});
@@ -499,7 +498,7 @@ pub const Lexer = struct {
     }
 
     /// consumes and validate the newline after the key/value pair.
-    fn lexValueEnd(self: *Self, t: *Token) void {
+    fn lexKeyValueEnd(self: *Self, t: *Token) void {
         _ = self.popState();
         self.skipBytes(&[_]u8{ ' ', '\t', '\r' });
         const b = self.nextByte() catch return;
@@ -516,7 +515,6 @@ pub const Lexer = struct {
 
     fn lexString(comptime token_type: TokenType) type {
         return struct {
-            // BUG: `'` aren't processed correctly.
             /// lex the string content between it's delimiters '"'.
             fn lexBasicString(self: *Self, t: *Token) void {
                 while (true) {
@@ -721,7 +719,7 @@ pub const Lexer = struct {
         };
         if (common.isNewLine(b)) {
             _ = self.nextByte() catch unreachable;
-            self.token_buffer.append(b) catch |e| {
+            self.token_buffer.appendSlice(&[_]u8{ '\\', b }) catch |e| {
                 self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
                 return e;
             };
@@ -759,7 +757,6 @@ pub const Lexer = struct {
                     // error already reported
                     return error.BadStringEscape;
                 }
-                // BUG: Unicode codepoint parsing is buggy.
                 var num_written: usize = common.toUnicodeCodepoint(hex[0..4]) catch {
                     return error.BasicStringEscape;
                 };
@@ -1389,8 +1386,8 @@ pub const Lexer = struct {
         if (f == lexValue) {
             return "lexValue";
         }
-        if (f == lexValueEnd) {
-            return "lexValueEnd";
+        if (f == lexKeyValueEnd) {
+            return "lexKeyValueEnd";
         }
         if (f == lexArrayValue) {
             return "lexArrayValue";

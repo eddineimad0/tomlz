@@ -48,14 +48,16 @@ fn skipUTF16BOM(in: *io.StreamSource) void {
 pub const Parser = struct {
     lexer: lex.Lexer,
     toml_src: *io.StreamSource,
-    table_path: common.DynArray(types.Key, null),
+    table_context: common.DynArray(types.Key, null), // used to keep track of table nestting.
+    key_path: common.DynArray(types.Key, null), // used to keep track of key parts e.g. "a.b.c",
     allocator: mem.Allocator,
-    key_arena: heap.ArenaAllocator,
-    strings_arena: heap.ArenaAllocator,
-    implicit_tables: StringHashmap(void),
+    arena: heap.ArenaAllocator,
+    implicit_map: StringHashmap(void),
     root_table: types.TomlTable,
     current_table: *types.TomlTable,
     current_key: types.Key,
+    array: common.DynArray(types.TomlValue, null),
+    in_array: bool,
 
     const Self = @This();
 
@@ -72,19 +74,32 @@ pub const Parser = struct {
     /// until the parser is deinitialized.
     /// call deinit() when done to release memory resources.
     pub fn init(allocator: mem.Allocator, toml_input: *io.StreamSource) mem.Allocator.Error!Self {
+        var lexer = try lex.Lexer.init(allocator, toml_input);
+        errdefer lexer.deinit();
         var map = StringHashmap(void).init(allocator);
+        var root = types.TomlTable.init(allocator);
         try map.ensureTotalCapacity(16);
+        errdefer map.deinit();
+        try root.ensureTotalCapacity(32);
+        errdefer root.deinit();
+        var table_context = try common.DynArray(types.Key, null).initCapacity(allocator, 16);
+        errdefer table_context.deinit();
+        var key_path = try common.DynArray(types.Key, null).initCapacity(allocator, 16);
+        errdefer key_path.deinit();
+        var arena = heap.ArenaAllocator.init(allocator);
         return .{
-            .lexer = try lex.Lexer.init(allocator, toml_input),
-            .table_path = try common.DynArray(types.Key, null).initCapacity(allocator, 16),
+            .lexer = lexer,
+            .table_context = table_context,
+            .key_path = key_path,
+            .implicit_map = map,
+            .arena = arena,
+            .root_table = root,
             .toml_src = toml_input,
-            .implicit_tables = map,
             .allocator = allocator,
-            .key_arena = heap.ArenaAllocator.init(allocator),
-            .strings_arena = heap.ArenaAllocator.init(allocator),
-            .root_table = try types.TomlTable.init(allocator),
             .current_key = "",
             .current_table = undefined,
+            .array = try common.DynArray(types.TomlValue, null).initCapacity(allocator, 32),
+            .in_array = false,
         };
     }
 
@@ -92,12 +107,12 @@ pub const Parser = struct {
     /// you shouldn't attempt to use the parser after calling this function
     pub fn deinit(self: *Self) void {
         self.lexer.deinit();
-        self.key_arena.deinit();
-        self.strings_arena.deinit();
-        self.table_path.deinit();
-        self.implicit_tables.deinit();
-        // TODO: free content.
+        self.key_path.deinit();
+        self.table_context.deinit();
+        self.implicit_map.deinit();
         self.root_table.deinit();
+        self.array.deinit();
+        self.arena.deinit();
         self.current_table = undefined;
         self.current_key = undefined;
     }
@@ -113,15 +128,54 @@ pub const Parser = struct {
         while (true) {
             self.lexer.nextToken(&token);
             switch (token.type) {
-                .EOF => break,
+                .EOS => break,
                 .Error => {
                     log.err("[line:{d},col:{d}], {s}\n", .{ token.start.line, token.start.offset, token.value.? });
                     return Error.LexerError;
                 },
-                .TableStart => {},
-                .TableEnd => {},
+                .TableStart => {
+                    _ = self.table_context.popOrNull();
+                    self.current_table = self.walkTableContext();
+                },
+                .TableEnd => {
+                    var new_table = types.TomlTable.init(self.arena.allocator());
+                    try new_table.ensureTotalCapacity(32);
+                    const value = types.TomlValue{ .Table = new_table };
+                    try self.table_context.append(self.current_key);
+                    const value_ptr = try self.putValue(&value);
+                    self.current_table = &value_ptr.Table;
+                },
+                .ArrayStart => {
+                    try self.array.resize(32);
+                    self.in_array = true;
+                    // const new_table = types.TomlValue{ .Table = try types.TomlTable.init(self.allocator) };
+                    // self.putValue(&new_table);
+                },
+                .ArrayEnd => {
+                    self.in_array = false;
+                    const final_slice = try self.array.toOwnedSlice();
+                    _ = try self.putValue(&types.TomlValue{ .Array = final_slice });
+                    self.array.clearContent();
+                },
+                .InlineTableStart => {
+                    if (self.implicit_map.contains(self.current_key)) {
+                        log.err("Parser: predefined table '{s}' can't be redefined to inline table", .{self.current_key});
+                        return Error.DuplicateKey;
+                    }
+                    var new_table = types.TomlTable.init(self.arena.allocator());
+                    try new_table.ensureTotalCapacity(32);
+                    const value = types.TomlValue{ .Table = new_table };
+                    try self.table_context.append(self.current_key);
+                    const value_ptr = try self.putValue(&value);
+                    self.current_table = &value_ptr.Table;
+                },
+                .InlineTableEnd => {
+                    _ = self.table_context.popOrNull();
+                    self.current_table = self.walkTableContext();
+                },
                 .Key => {
-                    const key = try self.key_arena.allocator().alloc(u8, token.value.?.len);
+                    // We don't own the memory pointed to by token.value.
+                    const key = try self.arena.allocator().alloc(u8, token.value.?.len);
                     @memcpy(key, token.value.?);
                     self.current_key = key;
                 },
@@ -135,8 +189,12 @@ pub const Parser = struct {
                 .DateTime,
                 => {
                     var value: types.TomlValue = undefined;
-                    try parseValue(self.strings_arena.allocator(), &token, &value);
-                    try self.putValue(&value);
+                    try parseValue(self.arena.allocator(), &token, &value);
+                    if (self.in_array) {
+                        try self.array.append(value);
+                    } else {
+                        _ = try self.putValue(&value);
+                    }
                 },
                 .Dot => {
                     try self.pushImplicitTable(self.current_key);
@@ -151,14 +209,18 @@ pub const Parser = struct {
     }
 
     fn pushImplicitTable(self: *Self, key: types.Key) mem.Allocator.Error!void {
-        try self.implicit_tables.put(
-            key,
-            {},
-        );
-        try self.table_path.append(key);
+        // try self.implicit_map.put(
+        //     key,
+        //     {},
+        // );
+        try self.key_path.append(key);
     }
 
-    fn parseValue(allocator: mem.Allocator, t: *const lex.Token, v: *types.TomlValue) (mem.Allocator.Error || Parser.Error)!void {
+    fn parseValue(
+        allocator: mem.Allocator,
+        t: *const lex.Token,
+        v: *types.TomlValue,
+    ) (mem.Allocator.Error || Parser.Error)!void {
         switch (t.type) {
             .Integer => {
                 const integer = fmt.parseInt(isize, t.value.?, 0) catch |e| {
@@ -184,14 +246,13 @@ pub const Parser = struct {
                 v.* = types.TomlValue{ .Float = float };
             },
             .BasicString => {
+                // we don't own the slice in token.value so copy it.
                 const string = try allocator.alloc(u8, t.value.?.len);
                 @memcpy(string, t.value.?);
                 v.* = types.TomlValue{ .String = string };
             },
             .MultiLineBasicString => {
                 const string = try trimEscapedNewlines(allocator, stripInitialNewline(t.value.?));
-                // defer allocator.free(trimmed);
-                // const string = try decodeEscaped(allocator, trimmed);
                 v.* = types.TomlValue{ .String = string };
             },
             .LiteralString => {
@@ -202,6 +263,7 @@ pub const Parser = struct {
             },
             .MultiLineLiteralString => {
                 const slice = stripInitialNewline(t.value.?);
+                // we don't own the slice in token.value so copy it.
                 const string = try allocator.alloc(u8, slice.len);
                 @memcpy(string, slice);
                 v.* = types.TomlValue{ .String = string };
@@ -213,18 +275,19 @@ pub const Parser = struct {
         }
     }
 
-    /// Processes the table_path array, creating the appropriate table for each key and returns
+    /// Processes the key_path array, creating the appropriate table for each key and returns
     /// the final table into which the current_key should be inserted.
     fn walkKeyPath(self: *Self) (mem.Allocator.Error || Parser.Error)!*types.TomlTable {
         var temp = self.current_table;
-        for (self.table_path.data()) |table_name| {
-            if (temp.getMutOrNull(table_name)) |value| {
+        for (self.key_path.data()) |table_name| {
+            if (temp.getPtr(table_name)) |value| {
+                // if (self.implicit_map.contains(table_name)) {
                 switch (value.*) {
                     .Table => |*t| temp = t,
-                    .TablesArray => |*ta| {
-                        const size = ta.size();
+                    .TablesArray => |ta| {
+                        const size = ta.len;
                         if (size > 0) {
-                            temp = ta.getOrNull(size - 1).?;
+                            temp = &ta[size - 1];
                         } else {
                             // TODO: handle cases where the array is empty.
                         }
@@ -234,36 +297,61 @@ pub const Parser = struct {
                         return Error.DuplicateKey;
                     },
                 }
+                // } else {
+                //     log.err("Parser: redefinition of key {s}", .{table_name});
+                //     return Error.DuplicateKey;
+                // }
             } else {
+                var new_table = types.TomlTable.init(self.arena.allocator());
+                try new_table.ensureTotalCapacity(32);
                 try temp.put(
                     table_name,
-                    types.TomlValue{ .Table = try types.TomlTable.init(self.allocator) },
+                    types.TomlValue{ .Table = new_table },
                 );
-                try self.implicit_tables.put(table_name, {});
-                temp = &temp.getMutOrNull(table_name).?.Table;
+                try self.implicit_map.put(table_name, {});
+                temp = &temp.getPtr(table_name).?.Table;
             }
         }
-        self.table_path.clearContent();
+        self.key_path.clearContent();
         return temp;
     }
 
-    fn putValue(self: *Self, value: *types.TomlValue) (mem.Allocator.Error || Parser.Error)!void {
-        const key = self.current_key;
-        var dest_table = try self.walkKeyPath();
-        if (dest_table.getMutOrNull(key)) |v| {
-            // possibly a duplicate key
-            if (self.implicit_tables.contains(key)) {
-                // make it explicit
-                _ = self.implicit_tables.remove(key);
-                dest_table = &v.Table;
-            } else {
-                log.err("Parser: redefinition of key '{s}'", .{key});
-                return Error.DuplicateKey;
-            }
+    /// Returns a pointer to the current table by walkine table_context
+    /// array from the root table.
+    fn walkTableContext(self: *Self) *types.TomlTable {
+        var final_table = &self.root_table;
+        for (self.table_context.data()) |table_name| {
+            final_table = &final_table.getPtr(table_name).?.Table;
         }
-        try dest_table.put(key, value.*);
+        return final_table;
     }
 
+    fn putValue(self: *Self, value: *const types.TomlValue) (mem.Allocator.Error || Parser.Error)!*types.TomlValue {
+        const key = self.current_key;
+        var dest_table = try self.walkKeyPath();
+        if (dest_table.getPtr(key)) |v| {
+            _ = v;
+            // possibly a duplicate key
+            // if (self.implicit_map.contains(key)) {
+            //     // make it explicit
+            //     _ = self.implicit_map.remove(key);
+            //     switch (value.*) {
+            //         .Table => return v, // already done.
+            //         else => {
+            //             log.err("Parser: '{s}' is already a table, can't change the type", .{key});
+            //             return Error.DuplicateKey;
+            //         },
+            //     }
+            // } else {
+            log.err("Parser: redefinition of key '{s}'", .{key});
+            return Error.DuplicateKey;
+            // }
+        }
+        try dest_table.put(key, value.*);
+        return dest_table.getPtr(key).?;
+    }
+
+    /// Skips the initial newline character in mutlilines strings.
     fn stripInitialNewline(slice: []const u8) []const u8 {
         var start_index: usize = 0;
         if (slice.len > 0 and slice[0] == '\n') {
@@ -274,12 +362,13 @@ pub const Parser = struct {
         return slice[start_index..];
     }
 
-    fn trimEscapedNewlines(allocator: mem.Allocator, slice: []const u8) mem.Allocator.Error![]const u8 {
-        // BUG: white space isn't escaped.
+    /// Validates and removes white space and newlines after a backslash `\`
+    fn trimEscapedNewlines(allocator: mem.Allocator, slice: []const u8) (mem.Allocator.Error || Parser.Error)![]const u8 {
         var trimmed = try common.String8.initCapacity(allocator, slice.len);
         errdefer trimmed.deinit();
         var wr = trimmed.writer();
         var iter = mem.splitSequence(u8, slice, &[_]u8{'\\'});
+
         _ = wr.write(iter.first()) catch unreachable;
         while (iter.next()) |seq| {
             if (seq.len > 2 and seq[1] == '\\') {
@@ -296,85 +385,16 @@ pub const Parser = struct {
                     },
                     else => break,
                 }
-                if (i != 0) {
-                    if (mem.indexOf(u8, seq[0..i], &[_]u8{'\n'}) == null) {
-                        // TODO: bad escape sequence
-                        return Error.InvalidStringEscape;
-                    }
-                }
-                _ = wr.write(seq[i..]) catch unreachable;
             }
+            if (i != 0) {
+                if (mem.indexOf(u8, seq[0..i], &[_]u8{'\n'}) == null) {
+                    return Error.InvalidStringEscape;
+                }
+            }
+            _ = wr.write(seq[i..]) catch unreachable;
         }
         return try trimmed.toOwnedSlice();
     }
-
-    // fn decodeEscaped(allocator: mem.Allocator, string: []const u8) (Parser.Error || mem.Allocator.Error)![]const u8 {
-    //     var decoded_str = try common.String8.initCapacity(allocator, string.len);
-    //     errdefer decoded_str.deinit();
-    //     var wr = decoded_str.writer();
-    //     var i: usize = 0;
-    //     while (i < string.len) {
-    //         const byte: u8 = string[i];
-    //         if (byte != '\\') {
-    //             try decoded_str.append(byte);
-    //             i += 1;
-    //             continue;
-    //         } else {
-    //             if (i + 1 >= string.len) {
-    //                 // reached the end before any escape.
-    //                 return Error.InvalidStringEscape;
-    //             }
-    //
-    //             const decoded_byte: u8 = switch (string[i + 1]) {
-    //                 'b' => 0x08,
-    //                 'f' => 0x0C, // Form feed
-    //                 'r' => '\r',
-    //                 'n' => '\n',
-    //                 't' => '\t',
-    //                 '"' => 0x22,
-    //                 '\\' => 0x5C,
-    //                 'u' => {
-    //                     debug.assert(i + 5 <= string.len);
-    //                     // lengths are validated by the lexer so just read ahead
-    //                     var codepoint: u32 = common.toUnicodeCodepoint(string[i + 2 .. i + 6]) catch |e| {
-    //                         log.err(
-    //                             "Parser: bad string escaped unicode codepoint, error={}\n",
-    //                             .{e},
-    //                         );
-    //                         return Error.InvalidStringEscape;
-    //                     };
-    //                     try wr.writeIntBig(u32, codepoint);
-    //                     i += 5;
-    //                     continue;
-    //                 },
-    //                 'U' => {
-    //                     debug.assert(i + 9 <= string.len);
-    //                     var codepoint: u32 = common.toUnicodeCodepoint(string[i + 2 .. i + 10]) catch |e| {
-    //                         log.err(
-    //                             "Parser: bad string escaped unicode codepoint, error={}\n",
-    //                             .{e},
-    //                         );
-    //                         return Error.InvalidStringEscape;
-    //                     };
-    //                     try wr.writeIntBig(u32, codepoint);
-    //                     i += 9;
-    //                     continue;
-    //                 },
-    //                 else => {
-    //                     log.err(
-    //                         "Parser: invalid Escape code found, '{}'\n",
-    //                         .{byte},
-    //                     );
-    //                     return Error.InvalidStringEscape;
-    //                 },
-    //             };
-    //             try decoded_str.append(decoded_byte);
-    //             i += 2;
-    //             continue;
-    //         }
-    //     }
-    //     return try decoded_str.toOwnedSlice();
-    // }
 
     fn isValidFloat(slice: []const u8) bool {
         var valid = true;
@@ -386,108 +406,6 @@ pub const Parser = struct {
         }
 
         return valid;
-    }
-
-    fn parseDebug(self: *Self) !void {
-        skipUTF16BOM(self.toml_src);
-        skipUTF8BOM(self.toml_src);
-
-        var token: lex.Token = undefined;
-
-        while (true) {
-            self.lexer.nextToken(&token);
-            switch (token.type) {
-                .Error => {
-                    debug.print("[{d},{d}]Tok:Error, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
-                    return error.LexerError;
-                },
-                .EOF => {
-                    debug.print("[{d},{d}]Tok:EOF\n", .{ token.start.line, token.start.offset });
-                    break;
-                },
-                .Key => {
-                    debug.print("[{d},{d}]Tok:Key, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
-                },
-                .Dot => {
-                    debug.print("[{d},{d}]Tok:Dot,\n", .{
-                        token.start.line,
-                        token.start.offset,
-                    });
-                },
-                .BasicString => {
-                    debug.print("[{d},{d}]Tok:BasicString, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
-                },
-                .LiteralString => {
-                    debug.print("[{d},{d}]Tok:LiteralString, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
-                },
-                .MultiLineBasicString => {
-                    debug.print("[{d},{d}]Tok:MLBasicString, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
-                },
-                .MultiLineLiteralString => {
-                    debug.print("[{d},{d}]Tok:MLLiteralString, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
-                },
-                .Integer => {
-                    debug.print("[{d},{d}]Tok:Integer, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
-                },
-                .Float => {
-                    debug.print("[{d},{d}]Tok:Float, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
-                },
-                .Boolean => {
-                    debug.print("[{d},{d}]Tok:Boolean, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
-                },
-                .DateTime => {
-                    debug.print("[{d},{d}]Tok:DateTime, {s}\n", .{ token.start.line, token.start.offset, token.value.? });
-                },
-                .InlineTableStart => {
-                    debug.print("[{d},{d}]Tok:InlineTableStart, \n", .{
-                        token.start.line,
-                        token.start.offset,
-                    });
-                },
-                .InlineTableEnd => {
-                    debug.print("[{d},{d}]Tok:InlineTableEnd, \n", .{
-                        token.start.line,
-                        token.start.offset,
-                    });
-                },
-                .ArrayStart => {
-                    debug.print("[{d},{d}]Tok:ArrayStart, \n", .{
-                        token.start.line,
-                        token.start.offset,
-                    });
-                },
-                .ArrayEnd => {
-                    debug.print("[{d},{d}]Tok:ArrayEnd, \n", .{
-                        token.start.line,
-                        token.start.offset,
-                    });
-                },
-                .TableStart => {
-                    debug.print("[{d},{d}]Tok:TableStart, \n", .{
-                        token.start.line,
-                        token.start.offset,
-                    });
-                },
-                .TableEnd => {
-                    debug.print("[{d},{d}]Tok:TableEnd , \n", .{
-                        token.start.line,
-                        token.start.offset,
-                    });
-                },
-                .ArrayTableStart => {
-                    debug.print("[{d},{d}]Tok:ArrayTableStart, \n", .{
-                        token.start.line,
-                        token.start.offset,
-                    });
-                },
-                .ArrayTableEnd => {
-                    debug.print("[{d},{d}]Tok:ArrayTableEnd , \n", .{
-                        token.start.line,
-                        token.start.offset,
-                    });
-                },
-            }
-        }
     }
 };
 

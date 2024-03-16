@@ -18,9 +18,8 @@ fn parseTomlFile(f: fs.File) void {
     printTable(t);
 }
 
-fn printArray(a: anytype) void {
-    for (0..a.size()) |i| {
-        const value = a.getOrNull(i).?;
+fn printArray(a: []const toml.TomlValue) void {
+    for (a) |*value| {
         switch (value.*) {
             .String => |slice| {
                 std.debug.print("{s},", .{slice});
@@ -28,13 +27,13 @@ fn printArray(a: anytype) void {
             .Boolean => |b| std.debug.print("{},", .{b}),
             .Integer => |int| std.debug.print("{d},", .{int}),
             .Float => |fl| std.debug.print("{d},", .{fl}),
-            // .DateTime => |*ts| std.debug.print("{any},", .{ts.*}),
+            .DateTime => |*ts| std.debug.print("{any},", .{ts.*}),
             .Table => |*table| {
                 std.debug.print("{{ ", .{});
                 printTable(table);
                 std.debug.print("\n}},", .{});
             },
-            .Array => |*inner_arry| {
+            .Array => |inner_arry| {
                 std.debug.print("[ ", .{});
                 printArray(inner_arry);
                 std.debug.print("],", .{});
@@ -53,8 +52,8 @@ fn printTable(t: *const toml.TomlTable) void {
             .Boolean => |b| std.debug.print("{},", .{b}),
             .Integer => |i| std.debug.print("{d},", .{i}),
             .Float => |fl| std.debug.print("{d},", .{fl}),
-            // .DateTime => |*ts| std.debug.print("{any},", .{ts.*}),
-            .Array => |*a| {
+            .DateTime => |*ts| std.debug.print("{any},", .{ts.*}),
+            .Array => |a| {
                 std.debug.print("[ ", .{});
                 printArray(a);
                 std.debug.print("]\n", .{});
@@ -64,31 +63,40 @@ fn printTable(t: *const toml.TomlTable) void {
                 printTable(table);
                 std.debug.print("\n}}", .{});
             },
-            .TablesArray => |*a| {
+            .TablesArray => |a| {
                 std.debug.print("[ ", .{});
-                for (0..a.size()) |i| {
+                for (a) |*i| {
                     std.debug.print("{{ ", .{});
-                    printTable(a.getOrNull(i).?);
+                    printTable(i);
                     std.debug.print("}},", .{});
                 }
                 std.debug.print("]\n", .{});
             },
         }
     }
+    std.debug.print("\n", .{});
 }
 
 pub fn main() !void {
     defer std.debug.assert(gpa_allocator.deinit() == .ok);
     const allocator = gpa_allocator.allocator();
+
+    var args = try std.process.argsWithAllocator(allocator);
+    defer args.deinit();
+    _ = args.skip();
+    const target = args.next();
+
     var path: [std.fs.MAX_PATH_BYTES]u8 = undefined;
 
     const cwd = try std.os.getcwd(&path);
 
-    const examples_path = try fs.path.join(allocator, &[2][]const u8{ cwd, "examples" });
-    defer allocator.free(examples_path);
+    const target_path = if (target) |t| try fs.path.join(allocator, &.{ cwd, "examples", t }) else try fs.path.join(allocator, &.{ cwd, "examples" });
 
-    var examples_dir = try fs.openIterableDirAbsolute(examples_path, .{});
+    defer allocator.free(target_path);
+
+    var examples_dir = try fs.openIterableDirAbsolute(target_path, .{});
     defer examples_dir.close();
+
     var walker = try examples_dir.walk(allocator);
     defer walker.deinit();
     while (try walker.next()) |*entry| {
@@ -106,6 +114,12 @@ pub fn main() !void {
                         parseTomlFile(example);
                     }
                 }
+            },
+            .file => {
+                var example = try examples_dir.dir.openFile(entry.path, .{});
+                defer example.close();
+                std.debug.print("\n========= Testing file {s} ===========\n", .{entry.path});
+                parseTomlFile(example);
             },
             else => continue,
         }

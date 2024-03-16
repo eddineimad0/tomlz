@@ -28,14 +28,18 @@ pub fn DynArray(comptime T: type, comptime destructor: ?*const fn (*T) void) typ
         }
 
         fn doubleCapacity(self: *Self) Allocator.Error!void {
-            try self.impl.ensureTotalCapacityPrecise(self.impl.capacity *| 2);
+            try self.resize(self.impl.capacity *| 2);
         }
 
-        pub fn append(self: *Self, byte: T) Allocator.Error!void {
-            if (self.isFull()) {
+        pub fn append(self: *Self, item: T) Allocator.Error!void {
+            if (self.isFull() and self.size() != 0) {
                 try self.doubleCapacity();
             }
-            self.impl.append(byte) catch unreachable;
+            self.impl.append(item) catch unreachable;
+        }
+
+        pub inline fn popOrNull(self: *Self) ?T {
+            return self.impl.popOrNull();
         }
 
         pub fn appendSlice(self: *Self, slice: []const T) Allocator.Error!void {
@@ -81,6 +85,14 @@ pub fn DynArray(comptime T: type, comptime destructor: ?*const fn (*T) void) typ
 
         pub inline fn writer(self: *Self) Implementation.Writer {
             return self.impl.writer();
+        }
+
+        pub inline fn toOwnedSlice(self: *Self) Allocator.Error![]T {
+            return try self.impl.toOwnedSlice();
+        }
+
+        pub fn resize(self: *Self, new_capacity: usize) Allocator.Error!void {
+            try self.impl.ensureTotalCapacity(new_capacity);
         }
     };
 }
