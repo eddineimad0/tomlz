@@ -63,7 +63,6 @@ const ParserStateStack = std.SegmentedList(ParserState, 8);
 pub const Parser = struct {
     toml_src: *io.StreamSource,
     lexer: lex.Lexer,
-    table_context: common.DynArray(types.Key), // used to keep track of table nestting.
     key_path: common.DynArray(types.Key), // used to keep track of key parts e.g. "a.b.c",
     array_stack: TomlArrayStack, // keeps track of nested arrays.
     allocator: mem.Allocator,
@@ -103,11 +102,6 @@ pub const Parser = struct {
         var root = types.TomlTable.init(allocator);
         try root.ensureTotalCapacity(opt.DEFAULT_HASHMAP_SIZE);
         errdefer root.deinit();
-        var table_context = try common.DynArray(types.Key).initCapacity(
-            allocator,
-            opt.DEFAULT_ARRAY_SIZE,
-        );
-        errdefer table_context.deinit();
         var key_path = try common.DynArray(types.Key).initCapacity(
             allocator,
             opt.DEFAULT_ARRAY_SIZE,
@@ -117,7 +111,6 @@ pub const Parser = struct {
         return .{
             .toml_src = toml_input,
             .lexer = lexer,
-            .table_context = table_context,
             .key_path = key_path,
             .array_stack = TomlArrayStack{},
             .implicit_map = map,
@@ -134,7 +127,6 @@ pub const Parser = struct {
     pub fn deinit(self: *Self) void {
         self.lexer.deinit();
         self.key_path.deinit();
-        self.table_context.deinit();
         self.implicit_map.deinit();
         self.array_stack.deinit(self.allocator);
         self.state_stack.deinit(self.allocator);
@@ -183,7 +175,7 @@ pub const Parser = struct {
                     );
                     return Error.LexerError;
                 },
-                .TableStart => {
+                .TableStart, .ArrayTableStart => {
                     self.popState();
                 },
                 .TableEnd => {
@@ -192,6 +184,44 @@ pub const Parser = struct {
                     var value = types.TomlValue{ .Table = new_table };
                     const value_ptr = try self.putValue(&value);
                     try self.pushState(.Table, &value_ptr.Table);
+                },
+                .ArrayTableEnd => {
+                    const dest_table = try self.walkKeyPath(&self.root_table, false);
+                    var tbl_array = if (dest_table.getPtr(self.state.key)) |value| blk: {
+                        switch (value.*) {
+                            .TablesArray => |old_array| {
+                                _ = dest_table.remove(self.state.key);
+                                const success = self.arena.allocator().resize(old_array, old_array.len + 1);
+                                if (!success) {
+                                    const new_array = try self.arena.allocator().alloc(
+                                        types.TomlTable,
+                                        old_array.len + 1,
+                                    );
+                                    defer self.arena.allocator().free(old_array);
+                                    for (0..old_array.len) |i| {
+                                        new_array[i] = old_array[i];
+                                    }
+                                    break :blk new_array;
+                                }
+                                break :blk old_array;
+                            },
+                            else => {
+                                log.err(
+                                    "Parser: tried to redefine {s} as an array of tables.",
+                                    .{self.state.key},
+                                );
+                                return Error.DuplicateKey;
+                            },
+                        }
+                    } else try self.arena.allocator().alloc(types.TomlTable, 1);
+                    errdefer self.arena.allocator().free(tbl_array);
+
+                    var new_table = types.TomlTable.init(self.arena.allocator());
+                    try new_table.ensureTotalCapacity(opt.DEFAULT_HASHMAP_SIZE);
+                    tbl_array[tbl_array.len - 1] = new_table;
+                    var value = types.TomlValue{ .TablesArray = tbl_array };
+                    _ = try self.putValue(&value);
+                    try self.pushState(.Table, &tbl_array[tbl_array.len - 1]);
                 },
                 .ArrayStart => {
                     try self.array_stack.append(
@@ -222,7 +252,6 @@ pub const Parser = struct {
                 .InlineTableEnd => {
                     self.popState();
                 },
-                .ArrayTableStart, .ArrayTableEnd => {},
                 .Comment => {},
                 .Key => {
                     // We don't own the memory pointed to by token.value.
@@ -243,14 +272,6 @@ pub const Parser = struct {
         }
         return &self.root_table;
     }
-
-    // fn pushImplicitTable(self: *Self, key: types.Key) mem.Allocator.Error!void {
-    //     // try self.implicit_map.put(
-    //     //     key,
-    //     //     {},
-    //     // );
-    //     try self.key_path.append(key);
-    // }
 
     fn parseValue(
         allocator: mem.Allocator,
@@ -425,12 +446,13 @@ pub const Parser = struct {
                 switch (value.*) {
                     .Table => |*t| temp = t,
                     .TablesArray => |ta| {
-                        const size = ta.len;
-                        if (size > 0) {
-                            temp = &ta[size - 1];
-                        } else {
-                            // TODO: handle cases where the array is empty.
-                        }
+                        debug.assert(ta.len > 0);
+                        temp = &ta[ta.len - 1];
+                        // const size = ta.len;
+                        // if (size > 0) {
+                        // } else {
+                        //     // TODO: handle cases where the array is empty.
+                        // }
                     },
                     else => {
                         log.err("Parser: key {s} is neither a table nor an arrays of tables", .{table_name});
@@ -450,18 +472,7 @@ pub const Parser = struct {
                 temp = &temp.getPtr(table_name).?.Table;
             }
         }
-        self.key_path.clearContent();
         return temp;
-    }
-
-    /// Returns a pointer to the current table by walkine table_context
-    /// array from the root table.
-    fn walkTableContext(self: *Self) *types.TomlTable {
-        var final_table = &self.root_table;
-        for (self.table_context.data()) |table_name| {
-            final_table = &final_table.getPtr(table_name).?.Table;
-        }
-        return final_table;
     }
 
     /// Insert the value into the current toml context (Table or Array) and return a pointer to that value.
@@ -475,6 +486,7 @@ pub const Parser = struct {
                 const key = self.state.key;
                 // we need to handle dotted keys "a.b.c";
                 const dest_table = try self.walkKeyPath(tbl, false);
+                self.key_path.clearContent();
                 if (dest_table.getPtr(key)) |v| {
                     // possibly a duplicate key
                     if (self.implicit_map.contains(key)) {
@@ -515,7 +527,10 @@ pub const Parser = struct {
     }
 
     /// Validates and removes white space and newlines after a backslash `\`
-    fn trimEscapedNewlines(allocator: mem.Allocator, slice: []const u8) (mem.Allocator.Error || Parser.Error)![]const u8 {
+    fn trimEscapedNewlines(
+        allocator: mem.Allocator,
+        slice: []const u8,
+    ) (mem.Allocator.Error || Parser.Error)![]const u8 {
         var trimmed = try common.String8.initCapacity(allocator, slice.len);
         errdefer trimmed.deinit();
         var wr = trimmed.writer();
