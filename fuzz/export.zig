@@ -12,7 +12,7 @@ export fn fuzzTomlz(buffer: [*]const u8, size: usize) callconv(.C) void {
     data.ptr = buffer;
     data.len = size;
     var stream_source = std.io.StreamSource{ .const_buffer = std.io.fixedBufferStream(data) };
-    var parser = tomlz.Parser.init(&stream_source, allocator);
+    var parser = tomlz.Parser.init(allocator, &stream_source) catch unreachable;
     defer parser.deinit();
     // Try to parse the data
     var parsed_table = parser.parse() catch unreachable; // compile in debug so we can crash.

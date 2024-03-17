@@ -64,16 +64,14 @@ pub const Parser = struct {
     toml_src: *io.StreamSource,
     lexer: lex.Lexer,
     key_path: common.DynArray(types.Key), // used to keep track of key parts e.g. "a.b.c",
-    array_stack: TomlArrayStack, // keeps track of nested arrays.
     allocator: mem.Allocator,
     arena: heap.ArenaAllocator,
     implicit_map: StringHashmap(void),
     root_table: types.TomlTable,
     state_stack: ParserStateStack,
+    array_stack: TomlArrayStack, // keeps track of nested arrays.
     state: ParserState,
-    // current_table: *types.TomlTable,
-    // current_array: ?*TomlValueArray,
-    //
+
     const DEBUG_KEY = "DEBUG";
 
     const Self = @This();
@@ -207,7 +205,7 @@ pub const Parser = struct {
                             },
                             else => {
                                 log.err(
-                                    "Parser: tried to redefine {s} as an array of tables.",
+                                    "Parser: attempt to redefine '{s}' as an array of tables.",
                                     .{self.state.key},
                                 );
                                 return Error.DuplicateKey;
