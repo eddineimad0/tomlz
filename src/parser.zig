@@ -169,7 +169,7 @@ pub const Parser = struct {
                     // TODO: make error message reporting opt-in by the caller.
                     log.err(
                         "[line:{d},col:{d}], {s}\n",
-                        .{ token.start.line, token.start.offset, token.value.? },
+                        .{ token.start.line, token.start.column, token.value.? },
                     );
                     return Error.LexerError;
                 },

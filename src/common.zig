@@ -101,12 +101,12 @@ pub fn DynArray(comptime T: type) type {
 /// Holds necessary informations about a position in the stream.
 pub const Position = struct {
     line: usize, // The line number in the current stream.
-    offset: usize, // Byte offset into the line
+    column: usize, // Byte offset into the line
 
     const Self = @This();
 
     pub fn toString(self: *const Self, allocator: Allocator) fmt.AllocPrintError![]u8 {
-        return fmt.allocPrint(allocator, "line:{%d},offset:{%d}", .{ self.line, self.offset });
+        return fmt.allocPrint(allocator, "line:{%d},offset:{%d}", .{ self.line, self.column });
     }
 };
 
