@@ -446,11 +446,6 @@ pub const Parser = struct {
                     .TablesArray => |ta| {
                         debug.assert(ta.len > 0);
                         temp = &ta[ta.len - 1];
-                        // const size = ta.len;
-                        // if (size > 0) {
-                        // } else {
-                        //     // TODO: handle cases where the array is empty.
-                        // }
                     },
                     else => {
                         log.err("Parser: key {s} is neither a table nor an arrays of tables", .{table_name});
