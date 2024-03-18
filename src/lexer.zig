@@ -225,7 +225,7 @@ pub const Lexer = struct {
                 self.pushStateOrStop(lexComment, t);
             },
             '[' => {
-                self.pushStateOrStop(lexTableStart, t);
+                self.pushStateOrStop(lexTableHeaderStart, t);
             },
             else => {
                 self.toLastByte();
@@ -267,7 +267,7 @@ pub const Lexer = struct {
         }
     }
 
-    fn lexTableStart(self: *Self, t: *Token) void {
+    fn lexTableHeaderStart(self: *Self, t: *Token) void {
         const b = self.peekByte() catch {
             const err_msg = self.formatError(
                 "Lexer: expected closing bracket ']' before end of stream",
@@ -277,6 +277,7 @@ pub const Lexer = struct {
             return;
         };
         _ = self.popState();
+        self.pushStateOrStop(lexTableHeaderEnd, t);
         if (b == '[') {
             _ = self.nextByte() catch unreachable;
             self.pushStateOrStop(lexArrayTableEnd, t);
@@ -286,6 +287,26 @@ pub const Lexer = struct {
             self.pushStateOrStop(lexTableEnd, t);
             self.pushStateOrStop(lexTableName, t);
             self.emit(t, .TableStart, null, &self.lex_start);
+        }
+    }
+
+    /// Assert newline character or comment after header [table] or [[array]].
+    fn lexTableHeaderEnd(self: *Self, t: *Token) void {
+        const current = self.popState();
+        debug.assert(current == lexTableHeaderEnd);
+        self.skipBytes(&[_]u8{ ' ', '\t', '\r' });
+        const b = self.nextByte() catch return;
+        switch (b) {
+            '#' => self.pushStateOrStop(lexComment, t),
+            '\n' => {},
+            else => {
+                const err_msg = self.formatError(
+                    "Lexer: expected newline after table header",
+                    .{},
+                );
+                self.emit(t, .Error, err_msg, &self.position);
+                return;
+            },
         }
     }
 
@@ -377,7 +398,7 @@ pub const Lexer = struct {
     fn lexArrayTableEnd(self: *Self, t: *Token) void {
         if (!self.consumeByte(']')) {
             const err_msg = self.formatError(
-                "Lexer expected end of Array of tables ']'",
+                "Lexer: expected `]` at the of Array of tables declaration",
                 .{},
             );
             self.emit(t, .Error, err_msg, &self.position);
@@ -1539,8 +1560,11 @@ pub const Lexer = struct {
         if (f == lexInlineTabValueEnd) {
             return "lexInlineTabValueEnd";
         }
-        if (f == lexTableStart) {
-            return "lexTableStart";
+        if (f == lexTableHeaderStart) {
+            return "lexTableHeaderStart";
+        }
+        if (f == lexTableHeaderEnd) {
+            return "lexTableHeaderEnd";
         }
         if (f == lexTableEnd) {
             return "lexTableEnd";
