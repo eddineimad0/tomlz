@@ -203,6 +203,7 @@ pub const Lexer = struct {
         self.toLastByte();
     }
 
+    // TODO: change name.
     fn lexTable(self: *Self, t: *Token) void {
         const b = self.nextByte() catch {
             self.emit(t, .EOS, null, &self.position);
@@ -1432,9 +1433,11 @@ pub const Lexer = struct {
         self.state_func_stack.deinit();
     }
 
+    /// Reads ahead in the stream and construct the first token it finds,
+    /// the token value field if set, points to memory owned by the lexer
+    /// that will be overwritten on every call, the caller should
+    /// copiy the the data if needed.
     pub fn nextToken(self: *Self, t: *Token) void {
-        // the token buffer will be overwritten on every call
-        // the caller should copy required data on emit.
         self.token_buffer.clearContent();
         while (true) {
             if (LOG_LEXER_STATE) {

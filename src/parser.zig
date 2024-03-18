@@ -25,6 +25,9 @@ fn skipUTF8BOM(in: *io.StreamSource) void {
 
     const r = in.reader();
     const header = r.readIntLittle(u24) catch {
+        // the stream has less than 3 bytes.
+        // for now go back and let the lexer throw the errors
+        in.seekTo(0) catch unreachable;
         return;
     };
 
@@ -40,6 +43,9 @@ fn skipUTF16BOM(in: *io.StreamSource) void {
 
     const r = in.reader();
     const header = r.readIntLittle(u16) catch {
+        // the stream has less than 2 bytes.
+        // for now go back and let the lexer throw the errors
+        in.seekTo(0) catch unreachable;
         return;
     };
 
