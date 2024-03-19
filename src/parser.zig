@@ -11,6 +11,7 @@ const heap = std.heap;
 const io = std.io;
 const debug = std.debug;
 const log = std.log;
+const unicode = std.unicode;
 
 const StringHashmap = std.StringHashMap;
 const TomlValueArray = common.DynArray(types.TomlValue);
@@ -87,6 +88,7 @@ pub const Parser = struct {
         DuplicateKey,
         InvalidInteger,
         InvalidFloat,
+        InvalidString,
         InvalidStringEscape,
         BadValue,
         InvalidDate,
@@ -284,6 +286,10 @@ pub const Parser = struct {
     ) (mem.Allocator.Error || Parser.Error)!void {
         switch (t.type) {
             .Integer => {
+                if (!isValidNumber(t.value.?)) {
+                    log.err("Parser: '{s}' isn't a valid number", .{t.value.?});
+                    return Error.InvalidInteger;
+                }
                 const integer = fmt.parseInt(isize, t.value.?, 0) catch |e| {
                     log.err("Parser: couldn't convert to integer, input={s}, error={}\n", .{ t.value.?, e });
                     return Error.InvalidInteger;
@@ -301,29 +307,61 @@ pub const Parser = struct {
                     return Error.InvalidFloat;
                 }
                 const float = fmt.parseFloat(f64, t.value.?) catch |e| {
-                    log.err("Parser: couldn't convert to float, input={s}, error={}\n", .{ t.value.?, e });
+                    log.err(
+                        "Parser: couldn't convert to float, input={s}, error={}\n",
+                        .{ t.value.?, e },
+                    );
                     return Error.InvalidFloat;
                 };
                 v.* = types.TomlValue{ .Float = float };
             },
             .BasicString => {
                 // we don't own the slice in token.value so copy it.
+                if (!unicode.utf8ValidateSlice(t.value.?)) {
+                    log.err(
+                        "Parser: string '{s}' contains invalid UTF-8 sequence.",
+                        .{t.value.?},
+                    );
+                    return Error.InvalidString;
+                }
                 const string = try allocator.alloc(u8, t.value.?.len);
                 @memcpy(string, t.value.?);
                 v.* = types.TomlValue{ .String = string };
             },
             .MultiLineBasicString => {
                 const string = try trimEscapedNewlines(allocator, stripInitialNewline(t.value.?));
+                if (!unicode.utf8ValidateSlice(string)) {
+                    log.err(
+                        "Parser: string '{s}' contains invalid UTF-8 sequence.",
+                        .{t.value.?},
+                    );
+                    allocator.free(string);
+                    return Error.InvalidString;
+                }
                 v.* = types.TomlValue{ .String = string };
             },
             .LiteralString => {
                 // we don't own the slice in token.value so copy it.
+                if (!unicode.utf8ValidateSlice(t.value.?)) {
+                    log.err(
+                        "Parser: string '{s}' contains invalid UTF-8 sequence.",
+                        .{t.value.?},
+                    );
+                    return Error.InvalidString;
+                }
                 const string = try allocator.alloc(u8, t.value.?.len);
                 @memcpy(string, t.value.?);
                 v.* = types.TomlValue{ .String = string };
             },
             .MultiLineLiteralString => {
                 const slice = stripInitialNewline(t.value.?);
+                if (!unicode.utf8ValidateSlice(slice)) {
+                    log.err(
+                        "Parser: string '{s}' contains invalid UTF-8 sequence.",
+                        .{t.value.?},
+                    );
+                    return Error.InvalidString;
+                }
                 // we don't own the slice in token.value so copy it.
                 const string = try allocator.alloc(u8, slice.len);
                 @memcpy(string, slice);
@@ -562,15 +600,55 @@ pub const Parser = struct {
         return try trimmed.toOwnedSlice();
     }
 
-    fn isValidFloat(slice: []const u8) bool {
+    fn isValidFloat(float: []const u8) bool {
         var valid = true;
+        valid = valid and isUnderscoresSurrounded(float) and !hasLeadingZero(float);
         // period check.
         // 7. and 3.e+20 are not valid float in toml 1.0 spec
-        if (mem.indexOf(u8, slice, &[_]u8{'.'})) |index| {
-            valid = valid and (slice.len > index + 1 and common.isDigit(slice[index + 1]));
-            valid = valid and (index > 0 and common.isDigit(slice[index - 1]));
+        if (mem.indexOf(u8, float, &[_]u8{'.'})) |index| {
+            valid = valid and (float.len > index + 1 and common.isDigit(float[index + 1]));
+            valid = valid and (index > 0 and common.isDigit(float[index - 1]));
         }
 
+        return valid;
+    }
+
+    fn isUnderscoresSurrounded(num: []const u8) bool {
+        if (num.len > 1) {
+            if (num[0] == '_' or num[num.len - 1] == '_') {
+                return false;
+            }
+
+            for (1..num.len - 1) |i| {
+                if (num[i] == '_') {
+                    if (!common.isHex(num[i - 1]) or !common.isHex(num[i + 1])) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    fn hasLeadingZero(num: []const u8) bool {
+        var has_leading_zero = false;
+        if (num.len > 2 and
+            (num[0] == '+' or num[0] == '-') and
+            num[1] == '0')
+        {
+            has_leading_zero = true;
+        } else if (num.len > 1 and
+            num[0] == '0' and
+            !(num[1] == 'b' or num[1] == 'o' or num[1] == 'x' or num[1] == '.'))
+        {
+            has_leading_zero = true;
+        }
+        return has_leading_zero;
+    }
+
+    fn isValidNumber(num: []const u8) bool {
+        var valid = true;
+        valid = valid and isUnderscoresSurrounded(num) and !hasLeadingZero(num);
         return valid;
     }
 };

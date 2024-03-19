@@ -1249,7 +1249,14 @@ pub const Lexer = struct {
     fn lexArrayValue(self: *Self, t: *Token) void {
         self.lex_start = self.position;
         while (true) {
-            const b = self.nextByte() catch break;
+            const b = self.nextByte() catch {
+                const err_msg = self.formatError(
+                    "Lexer: expected array closing delimiter ']' before end of stream",
+                    .{},
+                );
+                self.emit(t, .Error, err_msg, &self.position);
+                return;
+            };
             if (common.isNewLine(b) or common.isWhiteSpace(b)) {
                 self.skipBytes(&[_]u8{ ' ', '\n', '\r', '\t' });
                 continue;
@@ -1286,7 +1293,14 @@ pub const Lexer = struct {
 
     fn lexArrayValueEnd(self: *Self, t: *Token) void {
         while (true) {
-            const b = self.peekByte() catch break;
+            const b = self.peekByte() catch {
+                const err_msg = self.formatError(
+                    "Lexer: expected ',' or ']' after array value before end of stream",
+                    .{},
+                );
+                self.emit(t, .Error, err_msg, &self.position);
+                return;
+            };
             if (common.isNewLine(b) or common.isWhiteSpace(b)) {
                 self.skipBytes(&[_]u8{ ' ', '\n', '\r', '\t' });
                 continue;
