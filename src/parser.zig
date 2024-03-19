@@ -11,7 +11,6 @@ const heap = std.heap;
 const io = std.io;
 const debug = std.debug;
 const log = std.log;
-const unicode = std.unicode;
 
 const StringHashmap = std.StringHashMap;
 const TomlValueArray = common.DynArray(types.TomlValue);
@@ -317,7 +316,7 @@ pub const Parser = struct {
             },
             .BasicString => {
                 // we don't own the slice in token.value so copy it.
-                if (!unicode.utf8ValidateSlice(t.value.?)) {
+                if (!common.isValidUTF8(t.value.?)) {
                     log.err(
                         "Parser: string '{s}' contains invalid UTF-8 sequence.",
                         .{t.value.?},

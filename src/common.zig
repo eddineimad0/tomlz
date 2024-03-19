@@ -223,3 +223,5 @@ pub fn parseNanoSeconds(src: []const u8, ns: *u32) usize {
     }
     return src.len;
 }
+
+pub const isValidUTF8 = unicode.utf8ValidateSlice;

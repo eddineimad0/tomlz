@@ -20,7 +20,7 @@ pub const TokenType = enum {
     EOS, // End of Stream.
     Key,
     Dot,
-    Comment, // The lexer won't inlucde the newline byte in the comment value.
+    Comment, // The lexer won't inlucde the newline byte or the '#' in the comment value.
     Integer,
     Float,
     Boolean, // The lexer validates that the value is either true or false.
@@ -259,11 +259,22 @@ pub const Lexer = struct {
             if (common.isNewLine(b)) {
                 break;
             }
+
+            self.token_buffer.append(b) catch {
+                self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+            };
+        }
+        if (!common.isValidUTF8(self.token_buffer.data())) {
+            const err_msg = self.formatError("Lexer: Comment contains invalid UTF8 codepoint", .{});
+            self.emit(t, .Error, err_msg, &self.lex_start);
         }
         const last_func = self.popState();
         debug.assert(last_func == lexComment);
         if (opt.EMIT_COMMENT_TOKEN) {
-            emitToken(t, .Comment, null, &self.lex_start);
+            emitToken(t, .Comment, self.token_buffer.data(), &self.lex_start);
+        } else {
+            // clear the comment data.
+            self.token_buffer.clearContent();
         }
     }
 
