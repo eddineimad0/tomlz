@@ -196,12 +196,18 @@ pub const Parser = struct {
                         switch (value.*) {
                             .TablesArray => |old_array| {
                                 _ = dest_table.remove(self.state.key);
-                                const success = self.arena.allocator().resize(old_array, old_array.len + 1);
+                                const success = self.arena
+                                    .allocator()
+                                    .resize(old_array, old_array.len + 1);
+
                                 if (!success) {
-                                    const new_array = try self.arena.allocator().alloc(
+                                    const new_array = try self.arena
+                                        .allocator()
+                                        .alloc(
                                         types.TomlTable,
                                         old_array.len + 1,
                                     );
+
                                     defer self.arena.allocator().free(old_array);
                                     for (0..old_array.len) |i| {
                                         new_array[i] = old_array[i];
@@ -218,8 +224,13 @@ pub const Parser = struct {
                                 return Error.DuplicateKey;
                             },
                         }
-                    } else try self.arena.allocator().alloc(types.TomlTable, 1);
-                    errdefer self.arena.allocator().free(tbl_array);
+                    } else try self.arena
+                        .allocator()
+                        .alloc(types.TomlTable, 1);
+
+                    errdefer self.arena
+                        .allocator()
+                        .free(tbl_array);
 
                     var new_table = types.TomlTable.init(self.arena.allocator());
                     try new_table.ensureTotalCapacity(opt.DEFAULT_HASHMAP_SIZE);
@@ -260,7 +271,10 @@ pub const Parser = struct {
                 .Comment => {},
                 .Key => {
                     // We don't own the memory pointed to by token.value.
-                    const key = try self.arena.allocator().alloc(u8, token.value.?.len);
+                    const key = try self.arena
+                        .allocator()
+                        .alloc(u8, token.value.?.len);
+
                     @memcpy(key, token.value.?);
                     self.state.key = key;
                 },
@@ -328,7 +342,10 @@ pub const Parser = struct {
                 v.* = types.TomlValue{ .String = string };
             },
             .MultiLineBasicString => {
-                const string = try trimEscapedNewlines(allocator, stripInitialNewline(t.value.?));
+                const string = try trimEscapedNewlines(
+                    allocator,
+                    stripInitialNewline(t.value.?),
+                );
                 if (!common.isValidUTF8(string)) {
                     log.err(
                         "Parser: string '{s}' contains invalid UTF-8 sequence.",
@@ -473,8 +490,10 @@ pub const Parser = struct {
                         if (slice.len < 6 or slice[3] != ':') {
                             return null;
                         }
-                        var off_h: u8 = common.parseDigits(u8, slice[1..3]) catch return null;
-                        var off_m: u8 = common.parseDigits(u8, slice[4..6]) catch return null;
+                        var off_h: u8 = common.parseDigits(u8, slice[1..3]) catch
+                            return null;
+                        var off_m: u8 = common.parseDigits(u8, slice[4..6]) catch
+                            return null;
 
                         offs = types.TimeOffset{
                             .z = false,
@@ -497,7 +516,11 @@ pub const Parser = struct {
 
     /// Processes the key_path array, creating the appropriate table for each key and returns
     /// the final table into which the current_key should be inserted.
-    fn walkKeyPath(self: *Self, start: *types.TomlTable, add_implicit: bool) (mem.Allocator.Error || Parser.Error)!*types.TomlTable {
+    fn walkKeyPath(
+        self: *Self,
+        start: *types.TomlTable,
+        add_implicit: bool,
+    ) (mem.Allocator.Error || Parser.Error)!*types.TomlTable {
         var temp = start;
         for (self.key_path.data()) |table_name| {
             if (temp.getPtr(table_name)) |value| {
@@ -670,7 +693,8 @@ pub const Parser = struct {
 
     fn isValidNumber(num: []const u8) bool {
         var valid = true;
-        valid = valid and isUnderscoresSurrounded(num) and !hasLeadingZero(num);
+        valid = valid and isUnderscoresSurrounded(num) and
+            !hasLeadingZero(num);
         return valid;
     }
 };
@@ -684,7 +708,12 @@ test "lex string" {
         \\my_string3 = "Hello w\u3100rld!"
         \\my_string4 = """Hello w\U41520000rld!"""
     ;
-    var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
+    var ss = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
 
     var p = try Parser.init(testing.allocator, &ss);
     defer p.deinit();
@@ -713,7 +742,12 @@ test "lex integer" {
         \\# binary with prefix `0b`
         \\bin1 = 0b11010110
     ;
-    var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
+    var ss = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
 
     var p = try Parser.init(testing.allocator, &ss);
     defer p.deinit();
@@ -743,7 +777,12 @@ test "lex float" {
         \\sf5 = +nan # same as `nan`
         \\sf6 = -nan # valid, actual encoding is implementation-specific
     ;
-    var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
+    var ss = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
 
     var p = try Parser.init(testing.allocator, &ss);
     defer p.deinit();
@@ -757,7 +796,12 @@ test "lex bool" {
         \\bool1 = true
         \\bool2 = false
     ;
-    var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
+    var ss = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
 
     var p = try Parser.init(testing.allocator, &ss);
     defer p.deinit();
@@ -772,7 +816,12 @@ test "lex datetime" {
         \\odt2 = 1979-05-27T00:32:00-07:00
         \\odt3 = 1979-05-27T00:32:00.999999-07:00
     ;
-    var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
+    var ss = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
 
     var p = try Parser.init(testing.allocator, &ss);
     defer p.deinit();
@@ -797,7 +846,12 @@ test "lex array" {
         \\]
         \\
     ;
-    var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
+    var ss = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
 
     var p = try Parser.init(testing.allocator, &ss);
     defer p.deinit();
@@ -812,7 +866,12 @@ test "lex inline table" {
         \\point = { x = 1, y = 2 }
         \\animal = { type.name = "pug" }
     ;
-    var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
+    var ss = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
 
     var p = try Parser.init(testing.allocator, &ss);
     defer p.deinit();
@@ -837,7 +896,12 @@ test "lex table" {
         \\[ g .  h  . i ]    # same as [g.h.i]
         \\[ j . "ʞ" . 'l' ]  # same as [j."ʞ".'l']
     ;
-    var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
+    var ss = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
 
     var p = try Parser.init(testing.allocator, &ss);
     defer p.deinit();
@@ -868,7 +932,12 @@ test "lex array of tables" {
         \\[[fruits.varieties]]
         \\name = "plantain"
     ;
-    var ss = io.StreamSource{ .const_buffer = io.FixedBufferStream([]const u8){ .buffer = src, .pos = 0 } };
+    var ss = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
 
     var p = try Parser.init(testing.allocator, &ss);
     defer p.deinit();

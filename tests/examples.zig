@@ -12,7 +12,6 @@ fn parseTomlFile(f: fs.File) void {
     };
     defer p.deinit();
     var t = p.parse() catch {
-        std.debug.print("\n[ERROR]\n", .{});
         return;
     };
     printTable(t);
