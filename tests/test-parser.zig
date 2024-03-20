@@ -240,6 +240,7 @@ pub fn stringEscape(
         '\\' => try writer.writeAll("\\\\"),
         0x0C => try writer.writeAll("\\u000c"),
         0x08 => try writer.writeAll("\\u0008"),
+        0x1f => try writer.writeAll("\\u001f"),
         '"' => {
             if (f.len == 1 and f[0] == '\'') {
                 try writer.writeByte('"');
