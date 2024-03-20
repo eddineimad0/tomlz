@@ -173,7 +173,7 @@ pub fn parseDigits(comptime T: type, buff: []const u8) error{NotANumber}!T {
 }
 
 pub inline fn isDateValid(year: u16, month: u8, day: u8) bool {
-    if (month > 12) {
+    if (month > 12 or day == 0 or month == 0) {
         return false;
     }
 
@@ -195,7 +195,7 @@ pub inline fn isDateValid(year: u16, month: u8, day: u8) bool {
             }
         },
         else => {
-            if (day > 32) {
+            if (day > 31) {
                 return false;
             }
         },
@@ -215,7 +215,7 @@ pub fn parseNanoSeconds(src: []const u8, ns: *u32) usize {
     var offset: u32 = 100000000;
     for (0..src.len) |i| {
         if (ascii.isDigit(src[i])) {
-            ns.* = ns.* + (src[i] - '0') * offset;
+            ns.* += (src[i] - '0') * offset;
             offset /= 10;
         } else {
             return i;

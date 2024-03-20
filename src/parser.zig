@@ -329,7 +329,7 @@ pub const Parser = struct {
             },
             .MultiLineBasicString => {
                 const string = try trimEscapedNewlines(allocator, stripInitialNewline(t.value.?));
-                if (!unicode.utf8ValidateSlice(string)) {
+                if (!common.isValidUTF8(string)) {
                     log.err(
                         "Parser: string '{s}' contains invalid UTF-8 sequence.",
                         .{t.value.?},
@@ -341,7 +341,7 @@ pub const Parser = struct {
             },
             .LiteralString => {
                 // we don't own the slice in token.value so copy it.
-                if (!unicode.utf8ValidateSlice(t.value.?)) {
+                if (!common.isValidUTF8(t.value.?)) {
                     log.err(
                         "Parser: string '{s}' contains invalid UTF-8 sequence.",
                         .{t.value.?},
@@ -354,7 +354,7 @@ pub const Parser = struct {
             },
             .MultiLineLiteralString => {
                 const slice = stripInitialNewline(t.value.?);
-                if (!unicode.utf8ValidateSlice(slice)) {
+                if (!common.isValidUTF8(slice)) {
                     log.err(
                         "Parser: string '{s}' contains invalid UTF-8 sequence.",
                         .{t.value.?},
@@ -367,45 +367,61 @@ pub const Parser = struct {
                 v.* = types.TomlValue{ .String = string };
             },
             .DateTime => {
-                var date_time: types.LocalDateTime = undefined;
-                try parseLocalDateTime(t.value.?, &date_time);
+                var date_time: types.DateTime = undefined;
+                try parseDateTime(t.value.?, &date_time);
                 v.* = types.TomlValue{ .DateTime = date_time };
             },
             else => unreachable,
         }
     }
 
-    fn parseLocalDateTime(src: []const u8, output: *types.LocalDateTime) Error!void {
+    fn parseDateTime(src: []const u8, output: *types.DateTime) Error!void {
         var input = src;
-        output.date = parseLocalDate(input);
+        var expect_date: bool = false;
+        output.date = parseDate(input);
         if (output.date) |dt| {
             if (!common.isDateValid(dt.year, dt.month, dt.day)) {
-                log.err("Parser: {d}-{d}-{d} is not a valid date", .{ dt.year, dt.month, dt.day });
+                log.err(
+                    "Parser: {d}-{d}-{d} is not a valid date",
+                    .{ dt.year, dt.month, dt.day },
+                );
                 return Error.InvalidDate;
             }
-            if (src.len > 11 and (src[10] == 'T')) {
-                input = src[11..src.len];
+            if (src.len > 10) {
+                if (src[10] == 'T' and src.len > 11) {
+                    input = src[11..src.len];
+                    expect_date = true;
+                } else {
+                    log.err(
+                        "Parser: \"{s}\" time should be separated from date with a valid separator",
+                        .{input},
+                    );
+                    return Error.BadDateTimeFormat;
+                }
             } else {
                 output.time = null;
                 return;
             }
         }
 
-        output.time = parseLocalTime(input);
+        output.time = parseTime(input);
         if (output.time) |t| {
             if (!common.isTimeValid(t.hour, t.minute, t.second)) {
-                log.err("Parser: {d}:{d}:{d}.{d} is not a valid time", .{ t.hour, t.minute, t.second, t.nano_second });
+                log.err(
+                    "Parser: {d}:{d}:{d}.{d} is not a valid time",
+                    .{ t.hour, t.minute, t.second, t.nano_second },
+                );
                 return Error.InvalidTime;
             }
         } else {
-            if (output.date == null) {
+            if (output.date == null or expect_date) {
                 return Error.BadDateTimeFormat;
             }
         }
     }
 
     /// Expected string format YYYY-MM-DD
-    fn parseLocalDate(src: []const u8) ?types.LocalDate {
+    fn parseDate(src: []const u8) ?types.Date {
         if (src.len < 10) {
             return null;
         }
@@ -415,7 +431,7 @@ pub const Parser = struct {
         const y = common.parseDigits(u16, src[0..4]) catch return null;
         const m = common.parseDigits(u8, src[5..7]) catch return null;
         const d = common.parseDigits(u8, src[8..10]) catch return null;
-        return types.LocalDate{
+        return types.Date{
             .year = y,
             .month = m,
             .day = d,
@@ -423,8 +439,7 @@ pub const Parser = struct {
     }
 
     /// Expected string format HH:MM:SS.FFZ or HH:MM:SS.FF
-    fn parseLocalTime(src: []const u8) ?types.LocalTime {
-        // TODO: incomplete.
+    fn parseTime(src: []const u8) ?types.Time {
         if (src.len < 8) {
             return null;
         }
@@ -437,6 +452,8 @@ pub const Parser = struct {
 
         var ns: u32 = 0;
 
+        var offs: ?types.TimeOffset = null;
+
         if (src.len > 8) {
             var slice = src[8..src.len];
             if (slice[0] == '.') {
@@ -444,37 +461,37 @@ pub const Parser = struct {
                 slice = slice[stop + 1 .. slice.len];
             }
 
-            // if (slice.len > 0) {
-            //     switch (slice[0]) {
-            //         'Z' => offs = TimeOffset{ .z = true, .minutes = 0 },
-            //         '+', '-' => {
-            //             var sign: i16 = switch (slice[0]) {
-            //                 '+' => -1,
-            //                 '-' => 1,
-            //                 else => return null,
-            //             };
-            //             if (slice.len < 6 or slice[3] != ':') {
-            //                 return null;
-            //             }
-            //             var off_h: u8 = parseDigits(u8, slice[1..3]) catch return null;
-            //             var off_m: u8 = parseDigits(u8, slice[4..6]) catch return null;
-            //
-            //             offs = TimeOffset{
-            //                 .z = false,
-            //                 .minutes = ((@as(i16, off_h) * 60) + @as(i16, off_m)) * sign,
-            //             };
-            //         },
-            //         else => return null,
-            //     }
-            // }
+            if (slice.len > 0) {
+                switch (slice[0]) {
+                    'Z' => offs = types.TimeOffset{ .z = true, .minutes = 0 },
+                    '+', '-' => {
+                        var sign: i16 = switch (slice[0]) {
+                            '+' => -1,
+                            '-' => 1,
+                            else => return null,
+                        };
+                        if (slice.len < 6 or slice[3] != ':') {
+                            return null;
+                        }
+                        var off_h: u8 = common.parseDigits(u8, slice[1..3]) catch return null;
+                        var off_m: u8 = common.parseDigits(u8, slice[4..6]) catch return null;
+
+                        offs = types.TimeOffset{
+                            .z = false,
+                            .minutes = ((@as(i16, off_h) * 60) + @as(i16, off_m)) * sign,
+                        };
+                    },
+                    else => return null,
+                }
+            }
         }
 
-        return types.LocalTime{
+        return types.Time{
             .hour = h,
             .minute = m,
             .second = s,
             .nano_second = ns,
-            .precision = 0,
+            .offset = offs,
         };
     }
 
@@ -632,13 +649,19 @@ pub const Parser = struct {
     fn hasLeadingZero(num: []const u8) bool {
         var has_leading_zero = false;
         if (num.len > 2 and
-            (num[0] == '+' or num[0] == '-') and
-            num[1] == '0')
+            (num[0] == '+' or
+            num[0] == '-') and
+            num[1] == '0' and
+            !(num[2] == '.' or num[2] == 'e'))
         {
             has_leading_zero = true;
         } else if (num.len > 1 and
             num[0] == '0' and
-            !(num[1] == 'b' or num[1] == 'o' or num[1] == 'x' or num[1] == '.'))
+            !(num[1] == 'b' or
+            num[1] == 'o' or
+            num[1] == 'x' or
+            num[1] == '.' or
+            num[1] == 'e'))
         {
             has_leading_zero = true;
         }

@@ -67,7 +67,9 @@ fn jsonStringifyTable(t: *const tomlz.TomlTable, wr: *std.ArrayList(u8).Writer) 
         } else {
             first = false;
         }
-        wr.print("\t\"{s}\": ", .{e.key_ptr.*}) catch return error.JsonStringifyError;
+        wr.print("\t\"", .{}) catch return error.JsonStringifyError;
+        stringEscape(e.key_ptr.*, "", .{}, wr) catch return error.JsonStringifyError;
+        wr.print("\": ", .{}) catch return error.JsonStringifyError;
         switch (e.value_ptr.*) {
             .Array => |a| {
                 jsonStringifyArray(a, wr) catch return error.JsonStringifyError;
@@ -119,10 +121,14 @@ fn jsonStringifyArray(a: []const tomlz.TomlValue, wr: *std.ArrayList(u8).Writer)
 
 fn jsonStringifyValue(v: *const tomlz.TomlValue, wr: *std.ArrayList(u8).Writer) !void {
     switch (v.*) {
-        .String => |slice| try wr.print(
-            "{{\n\t\"type\": \"string\",\n\t\"value\": \"{s}\"\n}}",
-            .{slice},
-        ),
+        .String => |slice| {
+            try wr.print(
+                "{{\n\t\"type\": \"string\",\n\t\"value\": \"",
+                .{},
+            );
+            try stringEscape(slice, "", .{}, wr);
+            try wr.print("\"\n}}", .{});
+        },
         .Boolean => |b| try wr.print(
             "{{\n\t\"type\": \"bool\",\n\t\"value\": \"{}\"\n}}",
             .{b},
@@ -136,83 +142,126 @@ fn jsonStringifyValue(v: *const tomlz.TomlValue, wr: *std.ArrayList(u8).Writer) 
             .{f},
         ),
         .DateTime => |*ts| {
-            _ = ts;
-            // var value_type: [*:0]const u8 = "";
-            // var time_buffer: [256]u8 = undefined;
-            // var offset_buffer: [128]u8 = undefined;
-            // var offset: []u8 = undefined;
-            // var value_string: []u8 = undefined;
-            // if (ts.date != null and ts.time != null) {
-            //     value_type = "datetime-local";
-            //     if (ts.time.?.offset != null) {
-            //         if (ts.time.?.offset.?.z) {
-            //             offset = try fmt.bufPrint(&offset_buffer, "Z", .{});
-            //             value_type = "datetime";
-            //         } else {
-            //             offset = try fmt.bufPrint(
-            //                 &offset_buffer,
-            //                 "{d}",
-            //                 .{ts.time.?.offset.?.minutes},
-            //             );
-            //         }
-            //     } else {
-            //         offset = try fmt.bufPrint(&offset_buffer, "", .{});
-            //     }
-            //     value_string = try fmt.bufPrint(
-            //         &time_buffer,
-            //         "{d}-{d}-{d}T{d}:{d}:{d}{s}",
-            //         .{
-            //             ts.date.?.year,
-            //             ts.date.?.month,
-            //             ts.date.?.day,
-            //             ts.time.?.hour,
-            //             ts.time.?.minute,
-            //             ts.time.?.second,
-            //             offset,
-            //         },
-            //     );
-            // } else if (ts.date != null) {
-            //     value_type = "date-local";
-            //     value_string = try fmt.bufPrint(
-            //         &time_buffer,
-            //         "{d}-{d}-{d}",
-            //         .{
-            //             ts.date.?.year,
-            //             ts.date.?.month,
-            //             ts.date.?.day,
-            //         },
-            //     );
-            // } else if (ts.time != null) {
-            //     value_type = "time-local";
-            //     if (ts.time.?.offset != null) {
-            //         if (ts.time.?.offset.?.z) {
-            //             offset = try fmt.bufPrint(&offset_buffer, "Z", .{});
-            //         } else {
-            //             offset = try fmt.bufPrint(
-            //                 &offset_buffer,
-            //                 "{d}",
-            //                 .{ts.time.?.offset.?.minutes},
-            //             );
-            //         }
-            //     } else {
-            //         offset = try fmt.bufPrint(&offset_buffer, "", .{});
-            //     }
-            //     value_string = try fmt.bufPrint(
-            //         &time_buffer,
-            //         "{d}:{d}:{d}{s}",
-            //         .{
-            //             ts.time.?.hour,
-            //             ts.time.?.minute,
-            //             ts.time.?.second,
-            //             offset,
-            //         },
-            //     );
-            // }
-            // try wr.print(
-            //     "{{\n\t\"type\": \"{s}\",\n\t\"value\": \"{s}\"\n}}",
-            //     .{ value_type, value_string },
-            // );
+            var value_type: [*:0]const u8 = "";
+            var time_buffer: [256]u8 = undefined;
+            var offset_buffer: [128]u8 = undefined;
+            var offset: []u8 = undefined;
+            var value_string: []u8 = undefined;
+            if (ts.date != null and ts.time != null) {
+                value_type = "datetime-local";
+                if (ts.time.?.offset != null) {
+                    value_type = "datetime";
+                    if (ts.time.?.offset.?.z) {
+                        offset = try fmt.bufPrint(&offset_buffer, "Z", .{});
+                    } else {
+                        const sign: u8 = if (ts.time.?.offset.?.minutes < 0) '+' else '-';
+                        const offs = if (sign == '-') -1 * ts.time.?.offset.?.minutes else ts.time.?.offset.?.minutes;
+                        const hours = @divFloor(offs, 60);
+                        const minutes = @mod(offs, 60);
+                        offset = try fmt.bufPrint(
+                            &offset_buffer,
+                            "{d:0>2}:{d:0>2}",
+                            .{ hours, minutes },
+                        );
+                    }
+                } else {
+                    offset = try fmt.bufPrint(&offset_buffer, "", .{});
+                }
+                value_string = try fmt.bufPrint(
+                    &time_buffer,
+                    "{d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}{s}",
+                    .{
+                        ts.date.?.year,
+                        ts.date.?.month,
+                        ts.date.?.day,
+                        ts.time.?.hour,
+                        ts.time.?.minute,
+                        ts.time.?.second,
+                        offset,
+                    },
+                );
+            } else if (ts.date != null) {
+                value_type = "date-local";
+                value_string = try fmt.bufPrint(
+                    &time_buffer,
+                    "{d}-{d:0>2}-{d:0>2}",
+                    .{
+                        ts.date.?.year,
+                        ts.date.?.month,
+                        ts.date.?.day,
+                    },
+                );
+            } else if (ts.time != null) {
+                value_type = "time-local";
+                if (ts.time.?.offset != null) {
+                    if (ts.time.?.offset.?.z) {
+                        offset = try fmt.bufPrint(&offset_buffer, "Z", .{});
+                    } else {
+                        offset = try fmt.bufPrint(
+                            &offset_buffer,
+                            "{d}",
+                            .{ts.time.?.offset.?.minutes},
+                        );
+                    }
+                } else {
+                    offset = try fmt.bufPrint(&offset_buffer, "", .{});
+                }
+                value_string = try fmt.bufPrint(
+                    &time_buffer,
+                    "{d:0>2}:{d:0>2}:{d:0>2}{s}",
+                    .{
+                        ts.time.?.hour,
+                        ts.time.?.minute,
+                        ts.time.?.second,
+                        offset,
+                    },
+                );
+            }
+            try wr.print(
+                "{{\n\t\"type\": \"{s}\",\n\t\"value\": \"{s}\"\n}}",
+                .{ value_type, value_string },
+            );
         },
         else => return error.UnknownTomlValue,
     }
+}
+
+pub fn stringEscape(
+    bytes: []const u8,
+    comptime f: []const u8,
+    options: std.fmt.FormatOptions,
+    writer: anytype,
+) !void {
+    _ = options;
+    for (bytes) |byte| switch (byte) {
+        '\n' => try writer.writeAll("\\n"),
+        '\r' => try writer.writeAll("\\r"),
+        '\t' => try writer.writeAll("\\t"),
+        '\\' => try writer.writeAll("\\\\"),
+        0x0C => try writer.writeAll("\\u000c"),
+        0x08 => try writer.writeAll("\\u0008"),
+        '"' => {
+            if (f.len == 1 and f[0] == '\'') {
+                try writer.writeByte('"');
+            } else if (f.len == 0) {
+                try writer.writeAll("\\\"");
+            } else {
+                @compileError("expected {} or {'}, found {" ++ f ++ "}");
+            }
+        },
+        '\'' => {
+            if (f.len == 1 and f[0] == '\'') {
+                try writer.writeAll("\\'");
+            } else if (f.len == 0) {
+                try writer.writeByte('\'');
+            } else {
+                @compileError("expected {} or {'}, found {" ++ f ++ "}");
+            }
+        },
+        ' ', '!', '#'...'&', '('...'[', ']'...'~' => try writer.writeByte(byte),
+        // Use hex escapes for rest any unprintable characters.
+        else => {
+            try writer.writeAll(&[1]u8{byte});
+        },
+    };
 }

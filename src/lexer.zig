@@ -1240,7 +1240,23 @@ pub const Lexer = struct {
                 '-',
                 '.',
                 => b,
-                ' ', 't' => 'T', // simplify the parser job
+                ' ', 't' => {
+                    // in case of a space ' ' we need to read ahead
+                    // and make sure this isn't the end.
+                    _ = self.nextByte() catch unreachable;
+                    var c = self.nextByte() catch break;
+                    if (common.isDigit(c)) {
+                        self.token_buffer.appendSlice(&.{ 'T', c }) catch {
+                            self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                            return;
+                        };
+                        continue;
+                    } else {
+                        // we are done.
+                        self.toLastByte();
+                        break;
+                    }
+                },
                 'z' => 'Z',
                 else => break,
             };
