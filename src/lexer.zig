@@ -116,6 +116,7 @@ pub const Lexer = struct {
     /// Reads and return the next byte in the stream
     /// if it encounters and an end of steam an error is returned.
     fn nextByte(self: *Self) !u8 {
+        //TODO: reading \r ?
         const r = self.input.reader();
         const b = r.readByte() catch |err| {
             return err;

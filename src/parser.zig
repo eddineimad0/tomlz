@@ -73,6 +73,7 @@ pub const Parser = struct {
     allocator: mem.Allocator,
     arena: heap.ArenaAllocator,
     implicit_map: StringHashmap(void),
+    inline_map: StringHashmap(void),
     root_table: types.TomlTable,
     state_stack: ParserStateStack,
     array_stack: TomlArrayStack, // keeps track of nested arrays.
@@ -85,6 +86,7 @@ pub const Parser = struct {
     const Error = error{
         LexerError,
         DuplicateKey,
+        InlineTableUpdate,
         InvalidInteger,
         InvalidFloat,
         InvalidString,
@@ -101,9 +103,12 @@ pub const Parser = struct {
     pub fn init(allocator: mem.Allocator, toml_input: *io.StreamSource) mem.Allocator.Error!Self {
         var lexer = try lex.Lexer.init(allocator, toml_input);
         errdefer lexer.deinit();
-        var map = StringHashmap(void).init(allocator);
-        try map.ensureTotalCapacity(16);
-        errdefer map.deinit();
+        var implicit_map = StringHashmap(void).init(allocator);
+        try implicit_map.ensureTotalCapacity(16);
+        errdefer implicit_map.deinit();
+        var inline_map = StringHashmap(void).init(allocator);
+        try inline_map.ensureTotalCapacity(16);
+        errdefer inline_map.deinit();
         var root = types.TomlTable.init(allocator);
         try root.ensureTotalCapacity(opt.DEFAULT_HASHMAP_SIZE);
         errdefer root.deinit();
@@ -118,7 +123,8 @@ pub const Parser = struct {
             .lexer = lexer,
             .key_path = key_path,
             .array_stack = TomlArrayStack{},
-            .implicit_map = map,
+            .implicit_map = implicit_map,
+            .inline_map = inline_map,
             .allocator = allocator,
             .arena = arena,
             .root_table = root,
@@ -133,6 +139,7 @@ pub const Parser = struct {
         self.lexer.deinit();
         self.key_path.deinit();
         self.implicit_map.deinit();
+        self.inline_map.deinit();
         self.array_stack.deinit(self.allocator);
         self.state_stack.deinit(self.allocator);
         self.root_table.deinit();
@@ -263,6 +270,7 @@ pub const Parser = struct {
                     var value = types.TomlValue{ .Table = new_table };
                     errdefer new_table.deinit();
                     const value_ptr = try self.putValue(&value);
+                    try self.inline_map.put(self.state.key, {});
                     try self.pushState(.Table, &value_ptr.Table);
                 },
                 .InlineTableEnd => {
@@ -525,7 +533,15 @@ pub const Parser = struct {
         for (self.key_path.data()) |table_name| {
             if (temp.getPtr(table_name)) |value| {
                 switch (value.*) {
-                    .Table => |*t| temp = t,
+                    .Table => |*t| {
+                        if (self.inline_map.get(table_name)) |_| {
+                            // toml tried to add a property to an already
+                            // defined inline table.
+                            log.err("Parser: inline table '{s}' can't be updated after declaration.", .{table_name});
+                            return Error.InlineTableUpdate;
+                        }
+                        temp = t;
+                    },
                     .TablesArray => |ta| {
                         debug.assert(ta.len > 0);
                         temp = &ta[ta.len - 1];
@@ -537,7 +553,7 @@ pub const Parser = struct {
                 }
             } else {
                 var new_table = types.TomlTable.init(self.arena.allocator());
-                try new_table.ensureTotalCapacity(32);
+                try new_table.ensureTotalCapacity(opt.DEFAULT_HASHMAP_SIZE);
                 try temp.put(
                     table_name,
                     types.TomlValue{ .Table = new_table },
