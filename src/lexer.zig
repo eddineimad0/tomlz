@@ -708,7 +708,7 @@ pub const Lexer = struct {
 
                     switch (b) {
                         '"' => break,
-                        '\\' => self.lexStringEscape(t) catch return,
+                        '\\' => self.lexStringEscape(t, false) catch return,
                         else => self.token_buffer.append(b) catch {
                             self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
                             return;
@@ -905,7 +905,7 @@ pub const Lexer = struct {
     /// Called when encountering a string escape sequence in a multi line string.
     /// assumes '\' is already consumed
     fn lexMultiLineStringEscape(self: *Self, t: *Token) !void {
-        const b = self.peekByte() catch {
+        var b = self.peekByte() catch {
             const err_msg = self.formatError(
                 "Lexer: expected an escape sequence before end of stream",
                 .{},
@@ -913,7 +913,34 @@ pub const Lexer = struct {
             self.emit(t, .Error, err_msg, &self.lex_start);
             return error.BadStringEscape;
         };
-        if (common.isNewLine(b)) {
+        const curr_index = self.index;
+        _ = curr_index;
+        if (common.isWhiteSpace(b)) {
+            // Whitespace is allowed after line ending backslack
+            self.skipBytes(&WHITESPACE);
+            b = self.nextByte() catch {
+                const err_msg = self.formatError(
+                    "Lexer: expected an escape sequence before end of stream",
+                    .{},
+                );
+                self.emit(t, .Error, err_msg, &self.lex_start);
+                return error.BadStringEscape;
+            };
+            if (common.isNewLine(b)) {
+                self.token_buffer.appendSlice(&[_]u8{ '\\', b }) catch |e| {
+                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                    return e;
+                };
+                return;
+            } else {
+                const err_msg = self.formatError(
+                    "Lexer: whitespace is only allowed after line ending backslash",
+                    .{},
+                );
+                self.emit(t, .Error, err_msg, &self.lex_start);
+                return error.BadStringEscape;
+            }
+        } else if (common.isNewLine(b)) {
             self.ignoreBytes(1);
             self.token_buffer.appendSlice(&[_]u8{ '\\', b }) catch |e| {
                 self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
@@ -922,13 +949,13 @@ pub const Lexer = struct {
             return;
         }
 
-        try self.lexStringEscape(t);
+        try self.lexStringEscape(t, true);
     }
 
     /// Called when encountering a string escape sequence
     /// assumes '\' is already consumed
     /// decodes the string escapes while lexing.
-    fn lexStringEscape(self: *Self, t: *Token) !void {
+    fn lexStringEscape(self: *Self, t: *Token, is_multiline: bool) !void {
         const b = self.nextByte() catch {
             const err_msg = self.formatError(
                 "Lexer: expected an escape sequence before end of stream",
@@ -947,7 +974,9 @@ pub const Lexer = struct {
             't' => &[1]u8{'\t'},
             'f' => &[1]u8{0x0C},
             '"' => &[1]u8{'"'},
-            '\\' => &[1]u8{'\\'},
+            // for multi-line strings returning 2 backslashes helps the parser
+            // when trimming white space.
+            '\\' => if (is_multiline) &[2]u8{ '\\', '\\' } else &[1]u8{'\\'},
             'u' => u: {
                 if (!self.lexUnicodeEscape(t, 4, &hex)) {
                     // error already reported

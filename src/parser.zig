@@ -623,34 +623,38 @@ pub const Parser = struct {
         allocator: mem.Allocator,
         slice: []const u8,
     ) (mem.Allocator.Error || Parser.Error)![]const u8 {
+        // debug.print("TRIM={s}\n", .{slice});
         var trimmed = try common.String8.initCapacity(allocator, slice.len);
         errdefer trimmed.deinit();
-        var wr = trimmed.writer();
-        var iter = mem.splitSequence(u8, slice, &[_]u8{'\\'});
 
-        _ = wr.write(iter.first()) catch unreachable;
-        while (iter.next()) |seq| {
-            if (seq.len > 2 and seq[1] == '\\') {
-                // nothing to trim
+        var i: usize = 0;
+        while (i < slice.len) {
+            if (slice[i] != '\\') {
+                trimmed.append(slice[i]) catch unreachable;
+            } else if (i + 1 < slice.len and slice[i + 1] == '\\') {
                 trimmed.append('\\') catch unreachable;
-                _ = wr.write(seq) catch unreachable;
-            }
-            var i: usize = 0;
-            for (seq) |byte| {
-                switch (byte) {
-                    ' ', '\t', '\n', '\r' => {
-                        i += 1;
-                        continue;
-                    },
-                    else => break,
+                i += 1;
+            } else {
+                var j = i + 1;
+                while (j < slice.len) {
+                    switch (slice[j]) {
+                        ' ', '\t', '\n', '\r' => {
+                            j += 1;
+                            continue;
+                        },
+                        else => break,
+                    }
+                }
+                if (j != i + 1) {
+                    // a newline character is obligatory.
+                    if (mem.indexOf(u8, slice[(i + 1)..j], &[_]u8{'\n'}) == null) {
+                        return Error.InvalidStringEscape;
+                    }
+                    i = j;
+                    continue;
                 }
             }
-            if (i != 0) {
-                if (mem.indexOf(u8, seq[0..i], &[_]u8{'\n'}) == null) {
-                    return Error.InvalidStringEscape;
-                }
-            }
-            _ = wr.write(seq[i..]) catch unreachable;
+            i += 1;
         }
         return try trimmed.toOwnedSlice();
     }
