@@ -112,7 +112,7 @@ pub const Position = struct {
 
 pub inline fn isControl(byte: u8) bool {
     return switch (byte) {
-        '\t', '\r', '\n' => false, // exceptions in toml.
+        '\t', '\n' => false, // exceptions in toml.
         else => ascii.isControl(byte),
     };
 }
