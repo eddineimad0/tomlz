@@ -21,14 +21,11 @@ pub fn main() void {
     defer allocator.free(input);
 
     var stream_source = std.io.StreamSource{ .buffer = std.io.fixedBufferStream(input) };
-    var parser = tomlz.Parser.init(allocator, &stream_source) catch |e| {
-        std.log.err("Parser Init Error, {}\n", .{e});
-        os.exit(1);
-    };
+    var parser = tomlz.Parser.init(allocator);
     defer parser.deinit();
 
     // Try to parse the data
-    var table = parser.parse() catch |e| {
+    var table = parser.parse(&stream_source) catch |e| {
         std.log.err("Parser Error, {}", .{e});
         os.exit(1);
     }; // compile in debug so we can crash.

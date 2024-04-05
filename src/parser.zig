@@ -1,8 +1,7 @@
 const std = @import("std");
 const lex = @import("lexer.zig");
-const cnst = @import("constants.zig");
 const common = @import("common.zig");
-const types = @import("types.zig");
+const dt = @import("datatypes.zig");
 const opt = @import("build_options");
 
 const fmt = std.fmt;
@@ -13,7 +12,7 @@ const debug = std.debug;
 const log = std.log;
 
 const StringHashmap = std.StringHashMap;
-const TomlValueArray = common.DynArray(types.TomlValue);
+const TomlValueArray = common.DynArray(dt.TomlValue);
 const TomlArrayStack = std.SegmentedList(TomlValueArray, 8);
 
 fn skipUTF8BOM(in: *io.StreamSource) void {
@@ -22,6 +21,8 @@ fn skipUTF8BOM(in: *io.StreamSource) void {
     // (0xEF, 0xBB, 0xBF) that allows the reader to more reliably guess
     // a file as being encoded in UTF-8.
     // [src:https://stackoverflow.com/questions/2223882/whats-the-difference-between-utf-8-and-utf-8-with-bom]
+    //
+    const UTF8BOMLE: u24 = 0xBFBBEF;
 
     const r = in.reader();
     const header = r.readIntLittle(u24) catch {
@@ -31,7 +32,7 @@ fn skipUTF8BOM(in: *io.StreamSource) void {
         return;
     };
 
-    if (header != cnst.UTF8BOMLE) {
+    if (header != UTF8BOMLE) {
         in.seekTo(0) catch unreachable;
     }
 }
@@ -40,6 +41,7 @@ fn skipUTF16BOM(in: *io.StreamSource) void {
     // INFO:
     // In UTF-16, a BOM (U+FEFF) may be placed as the first bytes
     // of a file or character stream to indicate the endianness (byte order)
+    const UTF16BOMLE: u24 = 0xFFFE;
 
     const r = in.reader();
     const header = r.readIntLittle(u16) catch {
@@ -49,39 +51,26 @@ fn skipUTF16BOM(in: *io.StreamSource) void {
         return;
     };
 
-    if (header != cnst.UTF16BOMLE) {
+    if (header != UTF16BOMLE) {
         in.seekTo(0) catch unreachable;
     }
 }
 
-const ParserContext = enum(u1) {
-    Table,
-    Array,
-};
-const ParserState = struct {
-    context: ParserContext,
-    target: *anyopaque, // where to put current key/value.
-    key: types.Key,
-};
-
-const ParserStateStack = std.SegmentedList(ParserState, 8);
-
 pub const Parser = struct {
-    toml_src: *io.StreamSource,
-    lexer: lex.Lexer,
-    key_path: common.DynArray(types.Key), // used to keep track of key parts e.g. "a.b.c",
-    allocator: mem.Allocator,
-    arena: heap.ArenaAllocator,
-    implicit_map: StringHashmap(void),
-    inline_map: StringHashmap(void),
-    root_table: types.TomlTable,
-    state_stack: ParserStateStack,
-    array_stack: TomlArrayStack, // keeps track of nested arrays.
-    state: ParserState,
+    const ParserContext = enum(u1) {
+        Table,
+        Array,
+    };
+
+    const ParserState = struct {
+        context: ParserContext,
+        target: *anyopaque, // where to put current key/value.
+        key: dt.Key,
+    };
+
+    const ParserStateStack = std.SegmentedList(ParserState, 8);
 
     const DEBUG_KEY = "DEBUG";
-
-    const Self = @This();
 
     const Error = error{
         LexerError,
@@ -97,53 +86,44 @@ pub const Parser = struct {
         BadDateTimeFormat,
     };
 
+    const Self = @This();
+
+    implicit_map: StringHashmap(void),
+    inline_map: StringHashmap(void),
+    base_allocator: mem.Allocator,
+    arena: heap.ArenaAllocator,
+    state_stack: ParserStateStack,
+    array_stack: TomlArrayStack, // keeps track of nested arrays.
+    state: ParserState,
+    root: dt.TomlTable,
+
     /// initialize a toml parser, the toml_input pointer should remain valid
     /// until the parser is deinitialized.
     /// call deinit() when done to release memory resources.
-    pub fn init(allocator: mem.Allocator, toml_input: *io.StreamSource) mem.Allocator.Error!Self {
-        var lexer = try lex.Lexer.init(allocator, toml_input);
-        errdefer lexer.deinit();
-        var implicit_map = StringHashmap(void).init(allocator);
-        try implicit_map.ensureTotalCapacity(16);
-        errdefer implicit_map.deinit();
-        var inline_map = StringHashmap(void).init(allocator);
-        try inline_map.ensureTotalCapacity(16);
-        errdefer inline_map.deinit();
-        var root = types.TomlTable.init(allocator);
-        try root.ensureTotalCapacity(opt.DEFAULT_HASHMAP_SIZE);
-        errdefer root.deinit();
-        var key_path = try common.DynArray(types.Key).initCapacity(
-            allocator,
-            opt.DEFAULT_ARRAY_SIZE,
-        );
-        errdefer key_path.deinit();
-        var arena = heap.ArenaAllocator.init(allocator);
+    pub fn init(
+        allocator: mem.Allocator,
+    ) Self {
         return .{
-            .toml_src = toml_input,
-            .lexer = lexer,
-            .key_path = key_path,
+            .implicit_map = StringHashmap(void).init(allocator),
+            .inline_map = StringHashmap(void).init(allocator),
+            .base_allocator = allocator,
+            .arena = heap.ArenaAllocator.init(allocator),
             .array_stack = TomlArrayStack{},
-            .implicit_map = implicit_map,
-            .inline_map = inline_map,
-            .allocator = allocator,
-            .arena = arena,
-            .root_table = root,
             .state_stack = ParserStateStack{},
             .state = undefined,
+            .root = dt.TomlTable.init(allocator),
         };
     }
 
     /// Frees memory resources used by the parser.
     /// you shouldn't attempt to use the parser after calling this function
     pub fn deinit(self: *Self) void {
-        self.lexer.deinit();
-        self.key_path.deinit();
         self.implicit_map.deinit();
         self.inline_map.deinit();
-        self.array_stack.deinit(self.allocator);
-        self.state_stack.deinit(self.allocator);
-        self.root_table.deinit();
+        self.array_stack.deinit(self.base_allocator);
+        self.state_stack.deinit(self.base_allocator);
         self.arena.deinit();
+        self.root.deinit();
     }
 
     fn pushState(
@@ -151,7 +131,7 @@ pub const Parser = struct {
         new_context: ParserContext,
         new_put_target: *anyopaque,
     ) mem.Allocator.Error!void {
-        try self.state_stack.append(self.allocator, self.state);
+        try self.state_stack.append(self.base_allocator, self.state);
         self.state = .{
             .context = new_context,
             .target = new_put_target,
@@ -162,21 +142,32 @@ pub const Parser = struct {
     fn popState(self: *Self) void {
         self.state = self.state_stack.pop() orelse .{
             .context = .Table,
-            .target = &self.root_table,
+            .target = &self.root,
             .key = DEBUG_KEY,
         };
     }
 
-    pub fn parse(self: *Self) (mem.Allocator.Error || Parser.Error)!*const types.TomlTable {
-        skipUTF16BOM(self.toml_src);
-        skipUTF8BOM(self.toml_src);
+    pub fn parse(self: *Self, toml_input: *io.StreamSource) (mem.Allocator.Error || Parser.Error)!*const dt.TomlTable {
+        _ = self.arena.reset(.{ .free_all = {} });
+        self.root.clearAndFree();
 
+        try self.root.ensureTotalCapacity(opt.DEFAULT_HASHMAP_SIZE);
+        try self.implicit_map.ensureTotalCapacity(16);
+        try self.inline_map.ensureTotalCapacity(16);
+        var key_path = try common.DynArray(dt.Key).initCapacity(
+            self.base_allocator,
+            opt.DEFAULT_ARRAY_SIZE,
+        );
+        defer key_path.deinit();
+        self.state = .{ .context = .Table, .target = &self.root, .key = DEBUG_KEY };
+
+        skipUTF16BOM(toml_input);
+        skipUTF8BOM(toml_input);
+        var lexer = try lex.Lexer.init(self.base_allocator, toml_input);
+        defer lexer.deinit();
         var token: lex.Token = undefined;
-
-        self.state = .{ .context = .Table, .target = &self.root_table, .key = DEBUG_KEY };
-
         while (true) {
-            self.lexer.nextToken(&token);
+            lexer.nextToken(&token);
             switch (token.type) {
                 .EOS => break,
                 .Error => {
@@ -191,16 +182,16 @@ pub const Parser = struct {
                     self.popState();
                 },
                 .TableEnd => {
-                    const table = try self.createTable();
+                    const table = try self.createTable(&key_path);
                     try self.pushState(.Table, table);
                 },
                 .ArrayTableEnd => {
-                    const tbl = try self.createTablesArray();
+                    const tbl = try self.createTablesArray(&key_path);
                     try self.pushState(.Table, tbl);
                 },
                 .ArrayStart => {
                     try self.array_stack.append(
-                        self.allocator,
+                        self.base_allocator,
                         try TomlValueArray.initCapacity(
                             self.arena.allocator(),
                             opt.DEFAULT_ARRAY_SIZE,
@@ -215,12 +206,12 @@ pub const Parser = struct {
                     var array = self.array_stack.pop().?;
                     const slice = try array.toOwnedSlice();
                     array.deinit();
-                    var value = types.TomlValue{ .Array = slice };
+                    var value = dt.TomlValue{ .Array = slice };
                     self.popState();
-                    _ = try self.putValue(&value);
+                    _ = try self.putValue(&value, &key_path);
                 },
                 .InlineTableStart => {
-                    const table = try self.createTable();
+                    const table = try self.createTable(&key_path);
                     try self.inline_map.put(self.state.key, {});
                     try self.pushState(.Table, table);
                 },
@@ -239,22 +230,26 @@ pub const Parser = struct {
                 },
                 .Dot => {
                     // Sent when a dot between keys is encountered 'a.b'
-                    try self.key_path.append(self.state.key);
+                    try key_path.append(self.state.key);
                 },
                 else => {
-                    var value: types.TomlValue = undefined;
+                    var value: dt.TomlValue = undefined;
                     try parseValue(self.arena.allocator(), &token, &value);
-                    _ = try self.putValue(&value);
+                    _ = try self.putValue(&value, &key_path);
                 },
             }
         }
-        return &self.root_table;
+        self.implicit_map.clearAndFree();
+        self.inline_map.clearAndFree();
+        self.array_stack.clearRetainingCapacity();
+        self.state_stack.clearRetainingCapacity();
+        return &self.root;
     }
 
     fn parseValue(
         allocator: mem.Allocator,
         t: *const lex.Token,
-        v: *types.TomlValue,
+        v: *dt.TomlValue,
     ) (mem.Allocator.Error || Parser.Error)!void {
         switch (t.type) {
             .Integer => {
@@ -266,12 +261,12 @@ pub const Parser = struct {
                     log.err("Parser: couldn't convert to integer, input={s}, error={}\n", .{ t.value.?, e });
                     return Error.InvalidInteger;
                 };
-                v.* = types.TomlValue{ .Integer = integer };
+                v.* = dt.TomlValue{ .Integer = integer };
             },
             .Boolean => {
                 debug.assert(t.value.?.len == 4 or t.value.?.len == 5);
                 const boolean = if (t.value.?.len == 4) true else false;
-                v.* = types.TomlValue{ .Boolean = boolean };
+                v.* = dt.TomlValue{ .Boolean = boolean };
             },
             .Float => {
                 if (!isValidFloat(t.value.?)) {
@@ -285,7 +280,7 @@ pub const Parser = struct {
                     );
                     return Error.InvalidFloat;
                 };
-                v.* = types.TomlValue{ .Float = float };
+                v.* = dt.TomlValue{ .Float = float };
             },
             .BasicString => {
                 // we don't own the slice in token.value so copy it.
@@ -298,7 +293,7 @@ pub const Parser = struct {
                 }
                 const string = try allocator.alloc(u8, t.value.?.len);
                 @memcpy(string, t.value.?);
-                v.* = types.TomlValue{ .String = string };
+                v.* = dt.TomlValue{ .String = string };
             },
             .MultiLineBasicString => {
                 const string = try trimEscapedNewlines(
@@ -313,7 +308,7 @@ pub const Parser = struct {
                     allocator.free(string);
                     return Error.InvalidString;
                 }
-                v.* = types.TomlValue{ .String = string };
+                v.* = dt.TomlValue{ .String = string };
             },
             .LiteralString => {
                 // we don't own the slice in token.value so copy it.
@@ -326,7 +321,7 @@ pub const Parser = struct {
                 }
                 const string = try allocator.alloc(u8, t.value.?.len);
                 @memcpy(string, t.value.?);
-                v.* = types.TomlValue{ .String = string };
+                v.* = dt.TomlValue{ .String = string };
             },
             .MultiLineLiteralString => {
                 const slice = stripInitialNewline(t.value.?);
@@ -340,26 +335,26 @@ pub const Parser = struct {
                 // we don't own the slice in token.value so copy it.
                 const string = try allocator.alloc(u8, slice.len);
                 @memcpy(string, slice);
-                v.* = types.TomlValue{ .String = string };
+                v.* = dt.TomlValue{ .String = string };
             },
             .DateTime => {
-                var date_time: types.DateTime = undefined;
+                var date_time: dt.DateTime = undefined;
                 try parseDateTime(t.value.?, &date_time);
-                v.* = types.TomlValue{ .DateTime = date_time };
+                v.* = dt.TomlValue{ .DateTime = date_time };
             },
             else => unreachable,
         }
     }
 
-    fn parseDateTime(src: []const u8, output: *types.DateTime) Error!void {
+    fn parseDateTime(src: []const u8, output: *dt.DateTime) Error!void {
         var input = src;
         var expect_date: bool = false;
         output.date = parseDate(input);
-        if (output.date) |dt| {
-            if (!common.isDateValid(dt.year, dt.month, dt.day)) {
+        if (output.date) |date| {
+            if (!common.isDateValid(date.year, date.month, date.day)) {
                 log.err(
                     "Parser: {d}-{d}-{d} is not a valid date",
-                    .{ dt.year, dt.month, dt.day },
+                    .{ date.year, date.month, date.day },
                 );
                 return Error.InvalidDate;
             }
@@ -397,7 +392,7 @@ pub const Parser = struct {
     }
 
     /// Expected string format YYYY-MM-DD
-    fn parseDate(src: []const u8) ?types.Date {
+    fn parseDate(src: []const u8) ?dt.Date {
         if (src.len < 10) {
             return null;
         }
@@ -407,7 +402,7 @@ pub const Parser = struct {
         const y = common.parseDigits(u16, src[0..4]) catch return null;
         const m = common.parseDigits(u8, src[5..7]) catch return null;
         const d = common.parseDigits(u8, src[8..10]) catch return null;
-        return types.Date{
+        return dt.Date{
             .year = y,
             .month = m,
             .day = d,
@@ -415,7 +410,7 @@ pub const Parser = struct {
     }
 
     /// Expected string format HH:MM:SS.FFZ or HH:MM:SS.FF
-    fn parseTime(src: []const u8) ?types.Time {
+    fn parseTime(src: []const u8) ?dt.Time {
         if (src.len < 8) {
             return null;
         }
@@ -428,7 +423,7 @@ pub const Parser = struct {
 
         var ns: u32 = 0;
 
-        var offs: ?types.TimeOffset = null;
+        var offs: ?dt.TimeOffset = null;
 
         if (src.len > 8) {
             var slice = src[8..src.len];
@@ -439,7 +434,7 @@ pub const Parser = struct {
 
             if (slice.len > 0) {
                 switch (slice[0]) {
-                    'Z' => offs = types.TimeOffset{ .z = true, .minutes = 0 },
+                    'Z' => offs = dt.TimeOffset{ .z = true, .minutes = 0 },
                     '+', '-' => {
                         var sign: i16 = switch (slice[0]) {
                             '+' => -1,
@@ -454,7 +449,7 @@ pub const Parser = struct {
                         var off_m: u8 = common.parseDigits(u8, slice[4..6]) catch
                             return null;
 
-                        offs = types.TimeOffset{
+                        offs = dt.TimeOffset{
                             .z = false,
                             .minutes = ((@as(i16, off_h) * 60) + @as(i16, off_m)) * sign,
                         };
@@ -464,7 +459,7 @@ pub const Parser = struct {
             }
         }
 
-        return types.Time{
+        return dt.Time{
             .hour = h,
             .minute = m,
             .second = s,
@@ -477,10 +472,11 @@ pub const Parser = struct {
     /// the final table into which the current_key should be inserted.
     fn walkKeyPath(
         self: *Self,
-        start: *types.TomlTable,
-    ) (mem.Allocator.Error || Parser.Error)!*types.TomlTable {
+        start: *dt.TomlTable,
+        key_path: []const dt.Key,
+    ) (mem.Allocator.Error || Parser.Error)!*dt.TomlTable {
         var temp = start;
-        for (self.key_path.data()) |table_name| {
+        for (key_path) |table_name| {
             if (temp.getPtr(table_name)) |value| {
                 switch (value.*) {
                     .Table => |*t| {
@@ -498,11 +494,11 @@ pub const Parser = struct {
                     },
                 }
             } else {
-                var new_table = types.TomlTable.init(self.arena.allocator());
+                var new_table = dt.TomlTable.init(self.arena.allocator());
                 try new_table.ensureTotalCapacity(opt.DEFAULT_HASHMAP_SIZE);
                 try temp.put(
                     table_name,
-                    types.TomlValue{ .Table = new_table },
+                    dt.TomlValue{ .Table = new_table },
                 );
                 temp = &temp.getPtr(table_name).?.Table;
             }
@@ -512,10 +508,11 @@ pub const Parser = struct {
 
     fn walkHeaderPath(
         self: *Self,
-        start: *types.TomlTable,
-    ) (mem.Allocator.Error || Parser.Error)!*types.TomlTable {
+        start: *dt.TomlTable,
+        header_path: []const dt.Key,
+    ) (mem.Allocator.Error || Parser.Error)!*dt.TomlTable {
         var temp = start;
-        for (self.key_path.data()) |table_name| {
+        for (header_path) |table_name| {
             if (temp.getPtr(table_name)) |value| {
                 switch (value.*) {
                     .Table => |*t| {
@@ -541,11 +538,11 @@ pub const Parser = struct {
                     },
                 }
             } else {
-                var new_table = types.TomlTable.init(self.arena.allocator());
+                var new_table = dt.TomlTable.init(self.arena.allocator());
                 try new_table.ensureTotalCapacity(opt.DEFAULT_HASHMAP_SIZE);
                 try temp.put(
                     table_name,
-                    types.TomlValue{ .Table = new_table },
+                    dt.TomlValue{ .Table = new_table },
                 );
                 try self.implicit_map.put(table_name, {});
                 temp = &temp.getPtr(table_name).?.Table;
@@ -557,15 +554,16 @@ pub const Parser = struct {
     /// Insert the value into the current toml context (Table or Array) and return a pointer to that value.
     fn putValue(
         self: *Self,
-        value: *types.TomlValue,
-    ) (mem.Allocator.Error || Parser.Error)!*types.TomlValue {
+        value: *dt.TomlValue,
+        key_path: *common.DynArray(dt.Key),
+    ) (mem.Allocator.Error || Parser.Error)!*dt.TomlValue {
         switch (self.state.context) {
             .Table => {
-                var tbl: *types.TomlTable = @alignCast(@ptrCast(self.state.target));
+                var tbl: *dt.TomlTable = @alignCast(@ptrCast(self.state.target));
                 const key = self.state.key;
                 // we need to handle dotted keys "a.b.c";
-                const dest_table = try self.walkKeyPath(tbl);
-                self.key_path.clearContent();
+                const dest_table = try self.walkKeyPath(tbl, key_path.data());
+                key_path.clearContent();
                 if (dest_table.contains(key)) {
                     log.err("Parser: redefinition of key '{s}'", .{key});
                     return Error.DuplicateKey;
@@ -583,17 +581,18 @@ pub const Parser = struct {
 
     fn createTable(
         self: *Self,
-    ) (mem.Allocator.Error || Parser.Error)!*types.TomlTable {
-        var new_table = types.TomlTable.init(self.arena.allocator());
+        header_path: *common.DynArray(dt.Key),
+    ) (mem.Allocator.Error || Parser.Error)!*dt.TomlTable {
+        var new_table = dt.TomlTable.init(self.arena.allocator());
         try new_table.ensureTotalCapacity(opt.DEFAULT_HASHMAP_SIZE);
-        var tv = types.TomlValue{ .Table = new_table };
+        var tv = dt.TomlValue{ .Table = new_table };
         switch (self.state.context) {
             .Table => {
                 const key = self.state.key;
-                var outter: *types.TomlTable = @alignCast(@ptrCast(self.state.target));
+                var outter: *dt.TomlTable = @alignCast(@ptrCast(self.state.target));
                 // we need to handle dotted keys "a.b.c";
-                outter = try self.walkHeaderPath(outter);
-                self.key_path.clearContent();
+                outter = try self.walkHeaderPath(outter, header_path.data());
+                header_path.clearContent();
                 if (outter.getPtr(key)) |value| {
                     switch (value.*) {
                         .Table => |*table| {
@@ -628,10 +627,11 @@ pub const Parser = struct {
 
     fn createTablesArray(
         self: *Self,
-    ) (mem.Allocator.Error || Parser.Error)!*types.TomlTable {
+        header_path: *common.DynArray(dt.Key),
+    ) (mem.Allocator.Error || Parser.Error)!*dt.TomlTable {
         debug.assert(self.state.context == ParserContext.Table);
-        const outter = try self.walkHeaderPath(&self.root_table);
-        self.key_path.clearContent();
+        const outter = try self.walkHeaderPath(&self.root, header_path.data());
+        header_path.clearContent();
         var tbl_array = if (outter.getPtr(self.state.key)) |value| blk: {
             switch (value.*) {
                 .TablesArray => |old_array| {
@@ -645,7 +645,7 @@ pub const Parser = struct {
                         const new_array = try self.arena
                             .allocator()
                             .alloc(
-                            types.TomlTable,
+                            dt.TomlTable,
                             old_array.len + 1,
                         );
 
@@ -667,16 +667,16 @@ pub const Parser = struct {
             }
         } else try self.arena
             .allocator()
-            .alloc(types.TomlTable, 1);
+            .alloc(dt.TomlTable, 1);
 
         errdefer self.arena
             .allocator()
             .free(tbl_array);
 
-        var new_table = types.TomlTable.init(self.arena.allocator());
+        var new_table = dt.TomlTable.init(self.arena.allocator());
         try new_table.ensureTotalCapacity(opt.DEFAULT_HASHMAP_SIZE);
         tbl_array[tbl_array.len - 1] = new_table;
-        var value = types.TomlValue{ .TablesArray = tbl_array };
+        var value = dt.TomlValue{ .TablesArray = tbl_array };
         try outter.put(self.state.key, value);
         return &tbl_array[tbl_array.len - 1];
     }

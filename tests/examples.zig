@@ -6,12 +6,9 @@ var gpa_allocator = std.heap.GeneralPurposeAllocator(.{}){};
 
 fn parseTomlFile(f: fs.File) void {
     var ifs = io.StreamSource{ .file = f };
-    var p = toml.Parser.init(gpa_allocator.allocator(), &ifs) catch |e| {
-        std.debug.print("error={}", .{e});
-        return;
-    };
+    var p = toml.Parser.init(gpa_allocator.allocator());
     defer p.deinit();
-    var t = p.parse() catch {
+    var t = p.parse(&ifs) catch {
         return;
     };
     printTable(t);

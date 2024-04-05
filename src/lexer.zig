@@ -16,17 +16,21 @@ const LOG_LEXER_STATE = opt.LOG_LEXER_STATE;
 // the delimiters (`'`, `"`...etc). for numbers such as integers and floats
 // it only validates that they don't contain any non permissable characters,
 // the parser should make sure the values are valid for the type.
-pub const TokenType = enum {
-    EOS, // End of Stream.
+pub const TokenType = enum(i8) {
+    Error = -1,
+    EOS = 0, // End of Stream.
     Key,
     Dot,
-    Comment, // The lexer won't inlucde the newline byte or the '#' in the comment value.
+    // The lexer won't inlucde the newline byte or the '#' in the token value.
+    Comment,
     Integer,
     Float,
-    Boolean, // The lexer validates that the value is either `true` or `false`.
+    // The lexer validates that the value is either `true` or `false`.
+    Boolean,
     DateTime,
     BasicString,
-    LiteralString, // The lexer validates that the string has no newline byte.
+    // The lexer validates that the string has no newline characters.
+    LiteralString,
     MultiLineBasicString,
     MultiLineLiteralString,
     ArrayStart,
@@ -37,7 +41,6 @@ pub const TokenType = enum {
     ArrayTableEnd,
     InlineTableStart,
     InlineTableEnd,
-    Error,
 };
 
 /// Type used to report lexer findings.
@@ -65,7 +68,8 @@ pub const Lexer = struct {
     input: *io.StreamSource,
     index: usize, // current read index into the input.
     position: common.Position,
-    lex_start: common.Position, // position from where we started lexing the current token.
+    // position from where we started lexing the current token.
+    lex_start: common.Position,
     token_buffer: common.DynArray(u8),
     state_func_stack: Stack(?LexFuncPtr),
 
@@ -76,6 +80,8 @@ pub const Lexer = struct {
     const EMIT_FUNC: ?LexFuncPtr = null;
     const WHITESPACE = [2]u8{ ' ', '\t' };
     const NEWLINE = [2]u8{ '\n', '\r' };
+    const EOS: u21 = std.math.maxInt(u21);
+    const UTF8_ERROR: u21 = 0xfffd;
 
     inline fn clearState(self: *Self) void {
         self.state_func_stack.clearRetainingCapacity();

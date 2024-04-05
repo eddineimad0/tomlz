@@ -4,6 +4,7 @@ const std = @import("std");
 const ascii = std.ascii;
 const unicode = std.unicode;
 const fmt = std.fmt;
+const math = std.math;
 
 pub const Allocator = std.mem.Allocator;
 pub const String8 = std.ArrayList(u8);
@@ -14,12 +15,14 @@ pub fn DynArray(comptime T: type) type {
     return struct {
         const Implementation = std.ArrayList(T);
         impl: Implementation,
+        initial_capacity: usize,
 
         const Self = @This();
 
         pub fn initCapacity(allocator: Allocator, initial_capacity: usize) Allocator.Error!Self {
             return .{
-                .impl = try Implementation.initCapacity(allocator, initial_capacity),
+                .impl = try Implementation.initCapacity(allocator, initial_capacity | 1),
+                .initial_capacity = initial_capacity,
             };
         }
 
@@ -27,13 +30,17 @@ pub fn DynArray(comptime T: type) type {
             return self.impl.items.len == self.impl.capacity;
         }
 
-        fn doubleCapacity(self: *Self) Allocator.Error!void {
-            try self.resize(self.impl.capacity *| 2);
+        fn growCapacity(self: *Self, required: usize) Allocator.Error!void {
+            var growth = self.impl.capacity + math.pow(usize, 2, self.initial_capacity);
+            if (growth < required) {
+                growth = required;
+            }
+            try self.resize(growth);
         }
 
         pub fn append(self: *Self, item: T) Allocator.Error!void {
             if (self.isFull() and self.size() != 0) {
-                try self.doubleCapacity();
+                try self.growCapacity(1);
             }
             self.impl.append(item) catch unreachable;
         }
@@ -44,7 +51,7 @@ pub fn DynArray(comptime T: type) type {
 
         pub fn appendSlice(self: *Self, slice: []const T) Allocator.Error!void {
             if (self.isFull() or (self.impl.items.len +| slice.len > self.impl.capacity)) {
-                try self.doubleCapacity();
+                try self.growCapacity(slice.len);
             }
             self.impl.appendSlice(slice) catch unreachable;
         }
@@ -110,37 +117,51 @@ pub const Position = struct {
     }
 };
 
-pub inline fn isControl(byte: u8) bool {
-    return switch (byte) {
+pub inline fn isControl(codepoint: u21) bool {
+    return switch (codepoint) {
         '\t', '\n' => false, // exceptions in toml.
-        else => ascii.isControl(byte),
+        else => codepoint <= 0x1f or codepoint == 0x7f,
     };
 }
 
-pub const isHex = ascii.isHex;
-pub const isDigit = ascii.isDigit;
-
-pub inline fn isBinary(byte: u8) bool {
-    return (byte == '0' or byte == '1');
+pub inline fn isDigit(codpoint: u21) bool {
+    return switch (codpoint) {
+        '0'...'9' => true,
+        else => false,
+    };
 }
 
-pub inline fn isOctal(byte: u8) bool {
-    return switch (byte) {
+pub inline fn isHex(codepoint: u21) bool {
+    return switch (codepoint) {
+        '0'...'9', 'A'...'F', 'a'...'f' => true,
+        else => false,
+    };
+}
+
+pub inline fn isBinary(codepoint: u21) bool {
+    return (codepoint == '0' or codepoint == '1');
+}
+
+pub inline fn isOctal(codepoint: u21) bool {
+    return switch (codepoint) {
         '0'...'7' => true,
         else => false,
     };
 }
 
-pub inline fn isWhiteSpace(byte: u8) bool {
-    return (byte == ' ' or byte == '\t');
+pub inline fn isWhiteSpace(codepoint: u21) bool {
+    return (codepoint == ' ' or codepoint == '\t');
 }
 
-pub inline fn isNewLine(byte: u8) bool {
-    return (byte == '\n' or byte == '\r');
+pub inline fn isNewLine(codepoint: u21) bool {
+    return (codepoint == '\n' or codepoint == '\r');
 }
 
-pub inline fn isBareKeyChar(c: u8) bool {
-    return (ascii.isAlphanumeric(c) or c == '-' or c == '_');
+pub inline fn isBareKeyChar(codepoint: u21) bool {
+    return switch (codepoint) {
+        '0'...'9', 'A'...'Z', 'a'...'z' => true,
+        else => codepoint == '-' or codepoint == '_',
+    };
 }
 
 /// parses a the unicode codepoint in bytes, encodes it and store
