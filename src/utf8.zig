@@ -2,6 +2,9 @@ const std = @import("std");
 const mem = std.mem;
 const unicode = std.unicode;
 
+pub const EOS: u21 = std.math.maxInt(u21);
+pub const UTF8_ERROR: u21 = 0xfffd;
+
 pub const CharUTF8 = struct {
     bytes: ?[4]u8,
     codepoint: u21,
@@ -9,7 +12,7 @@ pub const CharUTF8 = struct {
 
     const Self = @This();
 
-    pub fn init(codepoint: u21, len: u8) !Self {
+    pub fn init(codepoint: u21, len: u8) Self {
         return .{
             .bytes = null,
             .codepoint = codepoint,
@@ -39,3 +42,36 @@ pub const CharUTF8 = struct {
         }
     }
 };
+
+pub fn readUTF8Codepoint(reader: anytype, bytes_count: *u8) u21 {
+    var buffer: [4]u8 = undefined;
+    bytes_count.* = 0;
+
+    buffer[0] = reader.readByte() catch
+        return EOS;
+
+    var count: u8 = unicode.utf8ByteSequenceLength(buffer[0]) catch
+        return UTF8_ERROR;
+
+    if (count == 1) {
+        // ascii character
+        bytes_count.* = 1;
+        return buffer[0];
+    } else {
+        const red = reader.readAll(buffer[1..count]) catch {
+            return UTF8_ERROR;
+        };
+
+        if (red + 1 != count) {
+            // unfinished codepoint sequence.
+            return UTF8_ERROR;
+        }
+
+        var codepoint: u21 = unicode.utf8Decode(buffer[0..count]) catch {
+            return UTF8_ERROR;
+        };
+
+        bytes_count.* = count;
+        return codepoint;
+    }
+}

@@ -1,24 +1,24 @@
 const std = @import("std");
-const opt = @import("build_options");
 const common = @import("common.zig");
+const utf8 = @import("utf8.zig");
+const opt = @import("build_options");
 
 const io = std.io;
 const mem = std.mem;
 const fmt = std.fmt;
+const unicode = std.unicode;
 const log = std.log;
 const debug = std.debug;
 
 const Stack = std.ArrayList;
 
-const LOG_LEXER_STATE = opt.LOG_LEXER_STATE;
-
 // NOTE: for all strings and keys tokens the value won't contain
 // the delimiters (`'`, `"`...etc). for numbers such as integers and floats
 // it only validates that they don't contain any non permissable characters,
 // the parser should make sure the values are valid for the type.
-pub const TokenType = enum(i8) {
+pub const TokenTag = enum(i8) {
     Error = -1,
-    EOS = 0, // End of Stream.
+    EndOfStream = 0, // End of Stream.
     Key,
     Dot,
     // The lexer won't inlucde the newline byte or the '#' in the token value.
@@ -48,30 +48,20 @@ pub const TokenType = enum(i8) {
 /// that is owned by the lexer and will be cleared withe each call to Lexer.nextToken(),
 /// and therefore should be copied before use.
 pub const Token = struct {
-    type: TokenType,
+    tag: TokenTag,
     value: ?[]const u8,
     start: common.Position,
 };
 
-inline fn emitToken(
-    t: *Token,
-    token_type: TokenType,
-    value: ?[]const u8,
-    pos: *const common.Position,
-) void {
-    t.start = pos.*;
-    t.type = token_type;
-    t.value = value;
-}
-
 pub const Lexer = struct {
     input: *io.StreamSource,
-    index: usize, // current read index into the input.
+    read_idx: usize, // current read index into the input.
     position: common.Position,
     // position from where we started lexing the current token.
     lex_start: common.Position,
     token_buffer: common.DynArray(u8),
     state_func_stack: Stack(?LexFuncPtr),
+    err_msg: ?[]const u8,
 
     const Self = @This();
     const LexFuncPtr = *const fn (self: *Self, t: *Token) void;
@@ -80,45 +70,75 @@ pub const Lexer = struct {
     const EMIT_FUNC: ?LexFuncPtr = null;
     const WHITESPACE = [2]u8{ ' ', '\t' };
     const NEWLINE = [2]u8{ '\n', '\r' };
-    const EOS: u21 = std.math.maxInt(u21);
-    const UTF8_ERROR: u21 = 0xfffd;
 
     inline fn clearState(self: *Self) void {
         self.state_func_stack.clearRetainingCapacity();
     }
 
-    inline fn pushStateOrThrow(self: *Self, f: ?LexFuncPtr, t: *Token) void {
+    inline fn pushStateOrThrow(self: *Self, f: ?LexFuncPtr) void {
         self.state_func_stack.append(f) catch {
-            emitToken(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
-            self.clearState();
+            self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
         };
     }
 
-    inline fn popState(self: *Self) ?LexFuncPtr {
-        return self.state_func_stack.pop();
-    }
-
-    inline fn popNState(self: *Self, n: u8) void {
-        debug.assert(self.state_func_stack.items.len >= n);
-        self.state_func_stack.items.len -= n;
+    inline fn nextState(self: *Self) ?LexFuncPtr {
+        return if (self.state_func_stack.items.len == 0)
+            null
+        else
+            self.state_func_stack.pop();
     }
 
     /// Populates the token 't' and set the state function to **EMIT_FUNC**.
     fn emit(
         self: *Self,
         t: *Token,
-        token_type: TokenType,
+        tag: TokenTag,
         value: ?[]const u8,
         pos: *const common.Position,
     ) void {
-        emitToken(t, token_type, value, pos);
-        if (token_type == .Error) {
-            // In case of an error clear the state stack and
-            // push the error fallback.
-            self.clearState();
-            self.pushStateOrThrow(lexOnError, t);
+        t.* = .{ .tag = tag, .value = value, .start = pos.* };
+        self.pushStateOrThrow(EMIT_FUNC);
+    }
+
+    /// Attempt to read the next unicode character in the stream
+    /// and copies it to the `out` parameter.
+    /// in case of an error it report the error an set the `err_msg`
+    /// field on self.
+    /// reaching end of stream/file isn't considered an error, the `out`
+    /// parameter is instead set to a special codepoint '0xffffff';
+    fn readChar(self: *Self, out: *utf8.CharUTF8) !void {
+        const reader = self.input.reader();
+        var len: u8 = undefined;
+        var cp = utf8.readUTF8Codepoint(reader, &len);
+
+        if (cp == utf8.UTF8_ERROR) {
+            self.reportError("Lexer: found invalid utf8 codepoint", .{});
+            return error.InvalidCodepoint;
         }
-        self.pushStateOrThrow(EMIT_FUNC, t);
+
+        self.read_idx += len;
+
+        if (cp == '\r') {
+            // expect a newline character.
+            cp = utf8.readUTF8Codepoint(reader, &len);
+            if (cp != '\n') {
+                self.reportError(
+                    "Lexer: carriage return should be followed by a newline character.",
+                    .{},
+                );
+                return error.BadEOL;
+            }
+
+            self.read_idx += 1;
+            self.position.line += 1;
+            self.position.column = 0;
+        } else if (common.isNewLine(cp)) {
+            self.position.line += 1;
+            self.position.column = 0;
+        }
+
+        out.* = utf8.CharUTF8.init(cp, len);
+        self.position.column += 1;
     }
 
     /// Reads and return the next byte in the stream
@@ -126,24 +146,22 @@ pub const Lexer = struct {
     /// this function makes sure carriage **\r** is followed by a line feed
     /// **\n** or it returns an error.
     fn nextByte(self: *Self) !u8 {
-        const r = self.input.reader();
-        var b = r.readByte() catch |err| {
-            return err;
-        };
+        const reader = self.input.reader();
+        var b = try reader.readByte();
+
         if (b == '\r') {
             // expect a newline character.
-            const c = r.readByte() catch 0x00;
+            const c = reader.readByte() catch 0x00;
             if (c != '\n') {
                 // rewind so we can keep returning error
                 // on the next call.
-                self.toLastByte();
                 return error.BadEOL;
             }
             b = '\n';
-            self.index += 1;
+            self.read_idx += 1;
         }
 
-        self.index += 1;
+        self.read_idx += 1;
         if (b == '\n') {
             self.position.line += 1;
             self.position.column = 1;
@@ -158,7 +176,7 @@ pub const Lexer = struct {
         const count = r.read(out) catch |err| {
             return err;
         };
-        self.index += count;
+        self.read_idx += count;
         for (0..count) |i| {
             if (out[i] == '\r' and out[i] != '\n') {
                 return error.BadEOL;
@@ -174,27 +192,6 @@ pub const Lexer = struct {
         return count;
     }
 
-    /// Rewind the stream position by 1 bytes
-    fn toLastByte(self: *Self) void {
-        debug.assert(self.index > 0);
-        self.index -= 1;
-        self.input.seekTo(self.index) catch unreachable;
-        if (self.position.column > 1) {
-            self.position.column -= 1;
-        } else {
-            self.position.line -= 1;
-        }
-    }
-
-    /// Returns the value of the next byte in the stream without modifying
-    /// the current read index in the stream.
-    /// same as nextByte returns an error if it reaches end of stream.
-    fn peekByte(self: *Self) !u8 {
-        const b = try self.nextByte();
-        self.toLastByte();
-        return b;
-    }
-
     /// Consume the next byte only if it is equal to the `predicate`
     /// otherwise it does nothing.
     /// success is reported through the return value.
@@ -206,22 +203,21 @@ pub const Lexer = struct {
         if (b == predicate) {
             return true;
         } else {
-            self.toLastByte();
+            self.unReadNByte(1);
             return false;
-        }
-    }
-
-    /// assumes readning the next count of bytes won't cause any errors.
-    fn ignoreBytes(self: *Self, count: usize) void {
-        for (0..count) |_| {
-            _ = self.nextByte() catch unreachable;
         }
     }
 
     /// Reads ahead in the stream and ignore any byte in `bytes_to_skip`.
     fn skipBytes(self: *Self, bytes_to_skip: []const u8) void {
         while (true) {
-            const b = self.nextByte() catch {
+            const b = self.nextByte() catch |err| {
+                if (err == error.BadEOL) {
+                    self.reportError(
+                        "Lexer: Expected a newline after carriage return",
+                        .{},
+                    );
+                }
                 return;
             };
 
@@ -234,44 +230,48 @@ pub const Lexer = struct {
                 break;
             }
         }
-        self.toLastByte();
+        self.unReadNByte(1);
+    }
+
+    fn unReadNByte(self: *Self, n: usize) void {
+        if (self.read_idx >= n) {
+            self.read_idx -= n;
+            self.input.seekTo(self.read_idx) catch unreachable;
+        }
     }
 
     fn lexRoot(self: *Self, t: *Token) void {
-        const b = self.nextByte() catch |err| {
-            if (err == error.BadEOL) {
-                const err_msg = self.formatError(
-                    "Lexer: Expected a newline after carriage return",
-                    .{},
-                );
-                self.emit(t, .Error, err_msg, &self.position);
-            } else {
-                self.emit(t, .EOS, null, &self.position);
-            }
-            return;
-        };
+        _ = t;
+        var c: utf8.CharUTF8 = undefined;
+        self.readChar(&c) catch return;
 
-        if (common.isControl(b)) {
-            const err_msg = self.formatError("Stream contains control character 0x{x:0>2}", .{b});
-            self.emit(t, .Error, err_msg, &self.position);
+        if (common.isControl(c.codepoint)) {
+            self.reportError(
+                "Stream contains control character '0x{x:0>2}'",
+                .{c.codepoint},
+            );
             return;
-        } else if (common.isWhiteSpace(b) or common.isNewLine(b)) {
+        } else if (common.isWhiteSpace(c.codepoint) or
+            common.isNewLine(c.codepoint))
+        {
             self.skipBytes(&(WHITESPACE ++ NEWLINE));
-            self.lexRoot(t);
+            self.pushStateOrThrow(lexRoot);
             return;
         }
 
-        switch (b) {
+        switch (c.codepoint) {
+            utf8.EOS => {},
             '#' => {
-                self.pushStateOrThrow(lexComment, t);
+                self.pushStateOrThrow(lexRoot);
+                self.pushStateOrThrow(lexComment);
             },
             '[' => {
-                self.pushStateOrThrow(lexTableHeaderStart, t);
+                self.pushStateOrThrow(lexTableHeaderStart);
             },
             else => {
-                self.toLastByte();
-                self.pushStateOrThrow(lexKeyValueEnd, t);
-                self.pushStateOrThrow(lexKey, t);
+                self.unReadNByte(c.len);
+                self.pushStateOrThrow(lexKeyValueEnd);
+                self.lexKey();
             },
         }
     }
@@ -283,197 +283,147 @@ pub const Lexer = struct {
     /// consumed.
     fn lexComment(self: *Self, t: *Token) void {
         self.lex_start = self.position;
+        var c: utf8.CharUTF8 = undefined;
         while (true) {
-            const b = self.nextByte() catch |err| {
-                if (err == error.BadEOL) {
-                    const err_msg = self.formatError(
-                        "Lexer: Expected a newline after carriage return",
-                        .{},
-                    );
-                    self.emit(t, .Error, err_msg, &self.position);
-                    return;
-                }
-                break;
-            };
+            self.readChar(&c) catch return;
 
-            if (common.isControl(b)) {
-                const err_msg = self.formatError(
-                    "Lexer: control character '{}' not allowed in comments",
-                    .{b},
+            if (common.isControl(c.codepoint)) {
+                self.reportError(
+                    "Lexer: control character '{u}' not allowed in comments",
+                    .{c.codepoint},
                 );
-                self.emit(t, .Error, err_msg, &self.position);
                 return;
             }
 
-            if (common.isNewLine(b)) {
+            if (common.isNewLine(c.codepoint) or c.codepoint == utf8.EOS) {
                 break;
             }
 
-            self.token_buffer.append(b) catch {
-                self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
-                return;
-            };
+            if (opt.EMIT_COMMENT_TOKEN) {
+                self.token_buffer.appendSlice(c.slice()) catch {
+                    self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
+                    return;
+                };
+            }
         }
-        if (!common.isValidUTF8(self.token_buffer.data())) {
-            const err_msg = self.formatError("Lexer: Comment contains invalid UTF8 codepoint.", .{});
-            self.emit(t, .Error, err_msg, &self.lex_start);
-            return;
-        }
-        const last_func = self.popState();
-        debug.assert(last_func == lexComment);
+
         if (opt.EMIT_COMMENT_TOKEN) {
-            emitToken(t, .Comment, self.token_buffer.data(), &self.lex_start);
-        } else {
-            // clear the comment data.
-            self.token_buffer.clearContent();
+            self.emit(t, .Comment, self.token_buffer.data(), &self.lex_start);
         }
     }
 
     fn lexTableHeaderStart(self: *Self, t: *Token) void {
-        _ = self.popState();
-        self.pushStateOrThrow(lexTableHeaderEnd, t);
-        const b = self.peekByte() catch |err| {
-            const err_msg = if (err == error.BadEOL)
-                self.formatError(
+        self.lex_start = self.position;
+        self.pushStateOrThrow(lexTableHeaderEnd);
+        const b = self.nextByte() catch |err| {
+            if (err == error.BadEOL) {
+                self.reportError(
                     "Lexer: Expected a newline after carriage return",
                     .{},
-                )
-            else
-                self.formatError(
+                );
+            } else {
+                self.reportError(
                     "Lexer: expected closing bracket ']' before end of stream",
                     .{},
                 );
-            self.emit(t, .Error, err_msg, &self.position);
+            }
             return;
         };
         if (b == '[') {
-            self.ignoreBytes(1);
-            self.pushStateOrThrow(lexArrayTableEnd, t);
-            self.pushStateOrThrow(lexTableName, t);
+            self.pushStateOrThrow(lexArrayTableEnd);
+            self.lexTableName();
+            // self.pushStateOrThrow(lexTableName);
             self.emit(t, .ArrayTableStart, null, &self.lex_start);
         } else {
-            self.pushStateOrThrow(lexTableEnd, t);
-            self.pushStateOrThrow(lexTableName, t);
+            self.unReadNByte(1);
+            self.pushStateOrThrow(lexTableEnd);
+            self.lexTableName();
+            // self.pushStateOrThrow(lexTableName);
             self.emit(t, .TableStart, null, &self.lex_start);
         }
     }
 
-    /// Assert newline character or comment after header [table] or [[array]].
+    /// Asserts newline character, comment or end of stream
+    /// after header [table] or [[array]].
     fn lexTableHeaderEnd(self: *Self, t: *Token) void {
-        const current = self.popState();
-        debug.assert(current == lexTableHeaderEnd);
+        _ = t;
         self.skipBytes(&WHITESPACE);
         const b = self.nextByte() catch |err| {
             if (err == error.BadEOL) {
-                const err_msg =
-                    self.formatError(
+                self.reportError(
                     "Lexer: Expected a newline after carriage return",
                     .{},
                 );
-                self.emit(t, .Error, err_msg, &self.position);
             }
             return;
         };
+        self.pushStateOrThrow(lexRoot);
         switch (b) {
-            '#' => self.pushStateOrThrow(lexComment, t),
+            '#' => self.pushStateOrThrow(lexComment),
             '\n' => {},
-            else => {
-                const err_msg = self.formatError(
-                    "Lexer: expected newline after table header",
-                    .{},
-                );
-                self.emit(t, .Error, err_msg, &self.position);
-                return;
-            },
+            else => self.reportError(
+                "Lexer: expected newline after table header",
+                .{},
+            ),
         }
     }
 
-    fn lexTableName(self: *Self, t: *Token) void {
+    fn lexTableName(self: *Self) void {
         self.skipBytes(&WHITESPACE);
-        const b = self.peekByte() catch |err| {
-            const err_msg = if (err == error.BadEOL)
-                self.formatError(
-                    "Lexer: Expected a newline after carriage return",
-                    .{},
-                )
-            else
-                self.formatError(
-                    "Lexer: expected closing bracket ']' before end of stream",
-                    .{},
-                );
-            self.emit(t, .Error, err_msg, &self.position);
-            return;
-        };
-        self.pushStateOrThrow(lexTableNameEnd, t);
-        switch (b) {
+        var c: utf8.CharUTF8 = undefined;
+        self.readChar(&c) catch return;
+        self.pushStateOrThrow(lexTableNameEnd);
+
+        switch (c.codepoint) {
             '.', ']' => {
-                const err_msg = self.formatError(
+                self.reportError(
                     "Lexer: unexpected symbol found within table name",
                     .{},
                 );
-                self.emit(t, .Error, err_msg, &self.position);
                 return;
             },
-            '"', '\'' => {
-                self.pushStateOrThrow(lexQuottedKey, t);
-            },
+            '"', '\'' => self.lexQuottedKey(@truncate(c.codepoint)),
             else => {
-                self.pushStateOrThrow(lexBareKey, t);
+                self.unReadNByte(1);
+                self.pushStateOrThrow(lexBareKey);
             },
         }
     }
 
     fn lexTableNameEnd(self: *Self, t: *Token) void {
         self.skipBytes(&WHITESPACE);
-        const b = self.nextByte() catch |err| {
-            const err_msg = if (err == error.BadEOL)
-                self.formatError(
-                    "Lexer: Expected a newline after carriage return",
-                    .{},
-                )
-            else
-                self.formatError(
-                    "Lexer: expected closing bracket ']' before end of stream",
-                    .{},
-                );
-
-            self.emit(t, .Error, err_msg, &self.position);
-            return;
-        };
-        switch (b) {
+        var c: utf8.CharUTF8 = undefined;
+        self.readChar(&c) catch return;
+        switch (c.codepoint) {
             '.' => {
-                _ = self.popState();
+                self.lexTableName();
+                // self.pushStateOrThrow(lexTableName);
                 self.emit(t, .Dot, null, &self.position);
                 return;
             },
             ']' => {
-                self.popNState(2);
                 return;
             },
             else => {
-                const err_msg = self.formatError(
-                    "Lexer: expected closing bracket ']' or comma '.' found `{c}`",
-                    .{b},
+                self.reportError(
+                    "Lexer: expected closing bracket ']' or comma '.' found `{u}`",
+                    .{c.codepoint},
                 );
-                self.emit(t, .Error, err_msg, &self.position);
                 return;
             },
         }
     }
 
     fn lexTableEnd(self: *Self, t: *Token) void {
-        _ = self.popState();
         self.emit(t, .TableEnd, null, &self.position);
     }
 
     fn lexArrayTableEnd(self: *Self, t: *Token) void {
-        _ = self.popState();
         if (!self.consumeByte(']')) {
-            const err_msg = self.formatError(
+            self.reportError(
                 "Lexer: expected `]` at the of Array of tables declaration",
                 .{},
             );
-            self.emit(t, .Error, err_msg, &self.position);
             return;
         }
         self.emit(t, .ArrayTableEnd, null, &self.position);
@@ -481,25 +431,19 @@ pub const Lexer = struct {
 
     /// Handles lexing a key and calls the next appropriate function
     /// this function assumes that there is at least one byte in the stream
-    fn lexKey(self: *Self, t: *Token) void {
+    fn lexKey(self: *Self) void {
+        self.pushStateOrThrow(lexKeyEnd);
         self.skipBytes(&WHITESPACE);
-        // TODO: not sure about this unreachable.
-        const b = self.peekByte() catch unreachable;
-        self.pushStateOrThrow(lexKeyEnd, t);
+        const b = self.nextByte() catch return;
         switch (b) {
-            '=', '.' => {
-                const err_msg = self.formatError(
-                    "Lexer: expected a key name found '{c}' ",
-                    .{b},
-                );
-                self.emit(t, .Error, err_msg, &self.position);
-                return;
-            },
-            '"', '\'' => {
-                self.pushStateOrThrow(lexQuottedKey, t);
-            },
+            '=', '.' => self.reportError(
+                "Lexer: expected a key name found '{c}' ",
+                .{b},
+            ),
+            '"', '\'' => self.lexQuottedKey(b),
             else => {
-                self.pushStateOrThrow(lexBareKey, t);
+                self.unReadNByte(1);
+                self.pushStateOrThrow(lexBareKey);
             },
         }
     }
@@ -509,298 +453,256 @@ pub const Lexer = struct {
         self.skipBytes(&WHITESPACE);
 
         const b = self.nextByte() catch {
-            const err_msg = self.formatError(
+            self.reportError(
                 "Lexer: expected '=' after key name",
                 .{},
             );
-            self.emit(t, .Error, err_msg, &self.position);
             return;
         };
 
         switch (b) {
             '.' => {
-                _ = self.popState();
+                self.lexKey();
                 self.emit(t, .Dot, null, &self.position);
             },
             '=' => {
-                self.popNState(2);
-                self.pushStateOrThrow(lexValue, t);
+                self.pushStateOrThrow(lexValue);
             },
-            else => {
-                const err_msg = self.formatError("Lexer: expected '=' or '.' found '{c}'", .{b});
-                self.emit(t, .Error, err_msg, &self.position);
-                return;
-            },
+            else => self.reportError(
+                "Lexer: expected '=' or '.' found '{c}'",
+                .{b},
+            ),
         }
     }
 
     /// Lex a bare key.
     fn lexBareKey(self: *Self, t: *Token) void {
         self.lex_start = self.position;
+        var c: utf8.CharUTF8 = undefined;
         while (true) {
-            const b = self.peekByte() catch {
-                break;
-            };
+            self.readChar(&c) catch return;
 
-            if (!common.isBareKeyChar(b)) {
+            if (!common.isBareKeyChar(c.codepoint)) {
+                self.unReadNByte(c.len);
                 break;
             }
 
-            self.token_buffer.append(b) catch {
+            self.token_buffer.appendSlice(c.slice()) catch {
                 // In case of an error clear the state stack and update the token
                 // to an error token.
-                self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                 return;
             };
-            self.ignoreBytes(1);
         }
-        const current = self.popState();
-        debug.assert(current == lexBareKey);
         self.emit(t, .Key, self.token_buffer.data(), &self.lex_start);
     }
 
-    fn lexQuottedKey(self: *Self, t: *Token) void {
-        const current = self.popState();
-        debug.assert(current == lexQuottedKey);
-        const b = self.nextByte() catch unreachable;
-        switch (b) {
-            '"' => self.pushStateOrThrow(lexString(.Key).lexBasicString, t),
-            '\'' => self.pushStateOrThrow(lexString(.Key).lexLiteralString, t),
+    fn lexQuottedKey(self: *Self, delim: u8) void {
+        self.lex_start = self.position;
+        switch (delim) {
+            '"' => self.pushStateOrThrow(lexString(.Key).lexBasicString),
+            '\'' => self.pushStateOrThrow(lexString(.Key).lexLiteralString),
             else => unreachable,
         }
-        self.lex_start = self.position;
     }
 
     fn lexValue(self: *Self, t: *Token) void {
-        _ = self.popState();
+        self.lex_start = self.position;
         self.skipBytes(&WHITESPACE);
         const b = self.nextByte() catch {
-            const err_msg = self.formatError(
+            self.reportError(
                 "Lexer: expected a value after '='",
                 .{},
             );
-            self.emit(t, .Error, err_msg, &self.position);
             return;
         };
+
         if (common.isDigit(b)) {
-            self.toLastByte();
-            self.pushStateOrThrow(lexNumber, t);
+            self.unReadNByte(1);
+            self.pushStateOrThrow(lexNumber);
             return;
         }
+
         switch (b) {
             '[' => {
-                self.pushStateOrThrow(lexArrayValue, t);
+                self.pushStateOrThrow(lexArrayValue);
                 self.emit(t, .ArrayStart, null, &self.position);
             },
             '{' => {
-                self.pushStateOrThrow(lexInlineTabValue, t);
+                self.pushStateOrThrow(lexInlineTabValue);
                 self.emit(t, .InlineTableStart, null, &self.position);
             },
             '"' => {
                 if (self.consumeByte('"')) {
                     if (self.consumeByte('"')) {
-                        self.pushStateOrThrow(lexMultiLineBasicString, t);
+                        self.pushStateOrThrow(lexMultiLineBasicString);
                         return;
                     } else {
-                        self.toLastByte();
+                        self.unReadNByte(1);
                     }
                 }
-                self.pushStateOrThrow(lexString(.BasicString).lexBasicString, t);
+                self.pushStateOrThrow(lexString(.BasicString).lexBasicString);
             },
             '\'' => {
                 if (self.consumeByte('\'')) {
                     if (self.consumeByte('\'')) {
-                        self.pushStateOrThrow(lexMultiLineLiteralString, t);
+                        self.pushStateOrThrow(lexMultiLineLiteralString);
                         return;
                     } else {
-                        self.toLastByte();
+                        self.unReadNByte(1);
                     }
                 }
-                self.pushStateOrThrow(lexString(.LiteralString).lexLiteralString, t);
+                self.pushStateOrThrow(lexString(.LiteralString).lexLiteralString);
             },
             'i', 'n' => {
-                self.toLastByte();
-                self.lex_start = self.position;
-                self.pushStateOrThrow(lexFloat, t);
+                self.unReadNByte(1);
+                self.pushStateOrThrow(lexFloat);
             },
             '-', '+' => {
                 self.token_buffer.append(b) catch {
-                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                    self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                     return;
                 };
-                self.lex_start = self.position;
-                self.pushStateOrThrow(lexDecimalInteger, t);
+                self.pushStateOrThrow(lexDecimalInteger);
             },
             't', 'f' => {
-                self.toLastByte();
-                self.pushStateOrThrow(lexBoolean, t);
+                self.unReadNByte(1);
+                self.pushStateOrThrow(lexBoolean);
             },
-            else => {
-                const err_msg = self.formatError(
-                    "Lexer: expected a value after '=' found '{c}'",
-                    .{b},
-                );
-                self.emit(t, .Error, err_msg, &self.position);
-                return;
-            },
+            else => self.reportError(
+                "Lexer: expected a value after '=' found '{c}'",
+                .{b},
+            ),
         }
     }
 
     /// consumes and validate the newline after the key/value pair.
     fn lexKeyValueEnd(self: *Self, t: *Token) void {
-        _ = self.popState();
+        _ = t;
         self.skipBytes(&WHITESPACE);
         const b = self.nextByte() catch |err| {
             if (err == error.BadEOL) {
-                const err_msg =
-                    self.formatError(
+                self.reportError(
                     "Lexer: Expected a newline after carriage return",
                     .{},
                 );
-                self.emit(t, .Error, err_msg, &self.position);
             }
             return;
         };
+        self.pushStateOrThrow(lexRoot);
         switch (b) {
-            '#' => self.pushStateOrThrow(lexComment, t),
+            '#' => self.pushStateOrThrow(lexComment),
             '\n' => return,
-            else => {
-                const err_msg = self.formatError(
-                    "Lexer: expected newline after key/value pair found '{c}'",
-                    .{b},
-                );
-                self.emit(t, .Error, err_msg, &self.position);
-                return;
-            },
+            else => self.reportError(
+                "Lexer: expected newline after key/value pair found '{c}'",
+                .{b},
+            ),
         }
     }
 
-    fn lexString(comptime token_type: TokenType) type {
+    fn lexString(comptime emit_tag: TokenTag) type {
         return struct {
             /// lex the string content between it's delimiters '"'.
             fn lexBasicString(self: *Self, t: *Token) void {
+                var c: utf8.CharUTF8 = undefined;
                 while (true) {
-                    const b = self.nextByte() catch |err| {
-                        const err_msg = if (err == error.BadEOL)
-                            self.formatError(
-                                "Lexer: Expected a newline after carriage return",
-                                .{},
-                            )
-                        else
-                            self.formatError(
-                                "Lexer: reached end of stream before string delimiter \" ",
+                    self.readChar(&c) catch return;
+
+                    if (common.isNewLine(c.codepoint)) {
+                        self.reportError(
+                            "Lexer: basic string can't contain a newline character '0x{X:0>2}'",
+                            .{c.codepoint},
+                        );
+                        return;
+                    }
+
+                    if (common.isControl(c.codepoint)) {
+                        self.reportError(
+                            "Lexer: control character '{u}' not allowed in basic strings",
+                            .{c.codepoint},
+                        );
+                        return;
+                    }
+
+                    switch (c.codepoint) {
+                        utf8.EOS => {
+                            self.reportError(
+                                "Lexer: expected a string delimiter '\"' before end of stream",
                                 .{},
                             );
-                        self.emit(t, .Error, err_msg, &self.position);
-                        return;
-                    };
-
-                    if (common.isNewLine(b)) {
-                        const err_msg = self.formatError(
-                            "Lexer: basic string can't contain a newline character 0x{X:0>2}",
-                            .{b},
-                        );
-                        self.emit(t, .Error, err_msg, &self.position);
-                        return;
-                    }
-                    if (common.isControl(b)) {
-                        const err_msg = self.formatError(
-                            "Lexer: control character '{}' not allowed in basic strings",
-                            .{b},
-                        );
-                        self.emit(t, .Error, err_msg, &self.position);
-                        return;
-                    }
-
-                    switch (b) {
+                            return;
+                        },
                         '"' => break,
-                        '\\' => self.lexStringEscape(t, false) catch return,
-                        else => self.token_buffer.append(b) catch {
-                            self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                        '\\' => self.lexStringEscape(false) catch return,
+                        else => self.token_buffer.appendSlice(c.slice()) catch {
+                            self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                             return;
                         },
                     }
                 }
-                const current = self.popState();
-                debug.assert(current == lexBasicString);
-                self.emit(t, token_type, self.token_buffer.data(), &self.lex_start);
+                self.emit(t, emit_tag, self.token_buffer.data(), &self.lex_start);
             }
 
             /// lex the string content between it's delimiters `'`.
             fn lexLiteralString(self: *Self, t: *Token) void {
+                var c: utf8.CharUTF8 = undefined;
                 while (true) {
-                    const b = self.nextByte() catch |err| {
-                        const err_msg = if (err == error.BadEOL)
-                            self.formatError(
-                                "Lexer: Expected a newline after carriage return",
-                                .{},
-                            )
-                        else
-                            self.formatError(
-                                "Lexer: reached end of stream before string delimiter ' ",
+                    self.readChar(&c) catch return;
+
+                    if (common.isControl(c.codepoint)) {
+                        self.reportError(
+                            "Lexer: control character '{u}' not allowed in litteral strings",
+                            .{c.codepoint},
+                        );
+                        return;
+                    }
+                    if (common.isNewLine(c.codepoint)) {
+                        self.reportError(
+                            "Lexer: litteral string can't contain a newline character '0x{X:0>2}'",
+                            .{c.codepoint},
+                        );
+                        return;
+                    }
+                    switch (c.codepoint) {
+                        utf8.EOS => {
+                            self.reportError(
+                                "Lexer: expected a string delimiter `'` before end of stream",
                                 .{},
                             );
-                        self.emit(t, .Error, err_msg, &self.position);
-                        return;
-                    };
-
-                    if (common.isControl(b)) {
-                        const err_msg = self.formatError(
-                            "Lexer: control character '{}' not allowed in litteral strings",
-                            .{b},
-                        );
-                        self.emit(t, .Error, err_msg, &self.position);
-                        return;
-                    }
-                    if (common.isNewLine(b)) {
-                        const err_msg = self.formatError(
-                            "Lexer: litteral string can't contain a newline character 0x{X:0>2}",
-                            .{b},
-                        );
-                        self.emit(t, .Error, err_msg, &self.position);
-                        return;
-                    }
-                    switch (b) {
+                            return;
+                        },
                         '\'' => break,
-                        else => self.token_buffer.append(b) catch {
-                            self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                        else => self.token_buffer.appendSlice(c.slice()) catch {
+                            self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                             return;
                         },
                     }
                 }
-                const current = self.popState();
-                debug.assert(current == lexLiteralString);
-                self.emit(t, token_type, self.token_buffer.data(), &self.lex_start);
+                self.emit(t, emit_tag, self.token_buffer.data(), &self.lex_start);
             }
         };
     }
 
     fn lexMultiLineBasicString(self: *Self, t: *Token) void {
-        self.lex_start = self.position;
+        var c: utf8.CharUTF8 = undefined;
         while (true) {
-            const b = self.nextByte() catch |err| {
-                const err_msg = if (err == error.BadEOL)
-                    self.formatError(
-                        "Lexer: Expected a newline after carriage return",
-                        .{},
-                    )
-                else
-                    self.formatError(
-                        "Lexer: reached end of stream before multi-line string delimiter \"\"\" ",
-                        .{},
-                    );
-                self.emit(t, .Error, err_msg, &self.position);
-                return;
-            };
-            if (common.isControl(b)) {
-                const err_msg = self.formatError(
-                    "Lexer: control character '{}' not allowed in basic strings",
-                    .{b},
+            self.readChar(&c) catch return;
+
+            if (common.isControl(c.codepoint)) {
+                self.reportError(
+                    "Lexer: control character '{u}' not allowed in basic strings",
+                    .{c.codepoint},
                 );
-                self.emit(t, .Error, err_msg, &self.position);
                 return;
             }
-            switch (b) {
+            switch (c.codepoint) {
+                utf8.EOS => {
+                    self.reportError(
+                        "Lexer: expected a string delimiter \"\"\" before end of stream",
+                        .{},
+                    );
+                    return;
+                },
                 '"' => {
                     if (self.consumeByte('"')) {
                         if (self.consumeByte('"')) {
@@ -809,65 +711,57 @@ pub const Lexer = struct {
                             // allowing for 5 '"' at the end.
                             var counter: i8 = 2;
                             while (counter > 0) {
-                                const c = self.peekByte() catch break;
-                                if (c != '"') {
+                                const b = self.nextByte() catch break;
+                                if (b != '"') {
+                                    self.unReadNByte(1);
                                     break;
                                 }
-                                self.token_buffer.append(c) catch {
-                                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                                self.token_buffer.append(b) catch {
+                                    self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                                     return;
                                 };
-                                self.ignoreBytes(1);
                                 counter -= 1;
                             }
                             break;
                         } else {
-                            self.toLastByte();
+                            self.unReadNByte(1);
                         }
                     }
-                    self.token_buffer.append(b) catch {
-                        self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                    self.token_buffer.append('"') catch {
+                        self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                         return;
                     };
                 },
-                '\\' => self.lexMultiLineStringEscape(t) catch return,
-                else => self.token_buffer.append(b) catch {
-                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                '\\' => self.lexMultiLineStringEscape() catch return,
+                else => self.token_buffer.appendSlice(c.slice()) catch {
+                    self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                     return;
                 },
             }
         }
-        const current = self.popState();
-        debug.assert(current == lexMultiLineBasicString);
         self.emit(t, .MultiLineBasicString, self.token_buffer.data(), &self.lex_start);
     }
 
     fn lexMultiLineLiteralString(self: *Self, t: *Token) void {
-        self.lex_start = self.position;
+        var c: utf8.CharUTF8 = undefined;
         while (true) {
-            const b = self.nextByte() catch |err| {
-                const err_msg = if (err == error.BadEOL)
-                    self.formatError(
-                        "Lexer: Expected a newline after carriage return",
-                        .{},
-                    )
-                else
-                    self.formatError(
-                        "Lexer: reached end of stream before multi-line string delimiter ''' ",
-                        .{},
-                    );
-                self.emit(t, .Error, err_msg, &self.position);
-                return;
-            };
-            if (common.isControl(b)) {
-                const err_msg = self.formatError(
-                    "Lexer: control character '{}' not allowed in litteral strings",
-                    .{b},
+            self.readChar(&c) catch return;
+
+            if (common.isControl(c.codepoint)) {
+                self.reportError(
+                    "Lexer: control character '{u}' not allowed in basic strings",
+                    .{c.codepoint},
                 );
-                self.emit(t, .Error, err_msg, &self.position);
                 return;
             }
-            switch (b) {
+            switch (c.codepoint) {
+                utf8.EOS => {
+                    self.reportError(
+                        "Lexer: expected a string delimiter ''' before end of stream",
+                        .{},
+                    );
+                    return;
+                },
                 '\'' => {
                     if (self.consumeByte('\'')) {
                         if (self.consumeByte('\'')) {
@@ -876,98 +770,92 @@ pub const Lexer = struct {
                             // allowing for 5 `'` at the end.
                             var counter: i8 = 2;
                             while (counter > 0) {
-                                const c = self.peekByte() catch break;
-                                if (c != '\'') {
+                                const b = self.nextByte() catch break;
+                                if (b != '\'') {
+                                    self.unReadNByte(1);
                                     break;
                                 }
-                                self.token_buffer.append(c) catch {
-                                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                                self.token_buffer.append(b) catch {
+                                    self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                                     return;
                                 };
-                                self.ignoreBytes(1);
                                 counter -= 1;
                             }
                             break;
                         } else {
-                            self.toLastByte();
+                            self.unReadNByte(1);
                         }
                     }
-                    self.token_buffer.append(b) catch {
-                        self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                    self.token_buffer.append('\'') catch {
+                        self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                         return;
                     };
                 },
-                else => self.token_buffer.append(b) catch {
-                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                else => self.token_buffer.appendSlice(c.slice()) catch {
+                    self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                     return;
                 },
             }
         }
-        const current = self.popState();
-        debug.assert(current == lexMultiLineLiteralString);
         self.emit(t, .MultiLineLiteralString, self.token_buffer.data(), &self.lex_start);
     }
 
     /// Called when encountering a string escape sequence in a multi line string.
     /// assumes '\' is already consumed
-    fn lexMultiLineStringEscape(self: *Self, t: *Token) !void {
-        var b = self.peekByte() catch {
-            const err_msg = self.formatError(
+    fn lexMultiLineStringEscape(self: *Self) !void {
+        var b = self.nextByte() catch {
+            self.reportError(
                 "Lexer: expected an escape sequence before end of stream",
                 .{},
             );
-            self.emit(t, .Error, err_msg, &self.lex_start);
             return error.BadStringEscape;
         };
-        const curr_index = self.index;
-        _ = curr_index;
+
         if (common.isWhiteSpace(b)) {
-            // Whitespace is allowed after line ending backslack
+            // Whitespace is allowed after line ending backslash
             self.skipBytes(&WHITESPACE);
             b = self.nextByte() catch {
-                const err_msg = self.formatError(
+                self.reportError(
                     "Lexer: expected an escape sequence before end of stream",
                     .{},
                 );
-                self.emit(t, .Error, err_msg, &self.lex_start);
                 return error.BadStringEscape;
             };
+
             if (common.isNewLine(b)) {
                 self.token_buffer.appendSlice(&[_]u8{ '\\', b }) catch |e| {
-                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                    self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                     return e;
                 };
                 return;
             } else {
-                const err_msg = self.formatError(
-                    "Lexer: whitespace is only allowed after line ending backslash",
+                self.reportError(
+                    "Lexer: expected a newline after line ending backslash",
                     .{},
                 );
-                self.emit(t, .Error, err_msg, &self.lex_start);
                 return error.BadStringEscape;
             }
         } else if (common.isNewLine(b)) {
-            self.ignoreBytes(1);
             self.token_buffer.appendSlice(&[_]u8{ '\\', b }) catch |e| {
-                self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.lex_start);
+                self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                 return e;
             };
             return;
         }
+        self.unReadNByte(1);
 
-        try self.lexStringEscape(t, true);
+        try self.lexStringEscape(true);
     }
 
     /// Called when encountering a string escape sequence
     /// assumes '\' is already consumed
     /// decodes the string escapes while lexing.
-    fn lexStringEscape(self: *Self, t: *Token, is_multiline: bool) !void {
+    fn lexStringEscape(self: *Self, is_multiline: bool) !void {
         const b = self.nextByte() catch {
-            const err_msg = self.formatError(
+            self.reportError(
                 "Lexer: expected an escape sequence before end of stream",
                 .{},
             );
-            self.emit(t, .Error, err_msg, &self.position);
             return error.BadStringEscape;
         };
 
@@ -984,92 +872,63 @@ pub const Lexer = struct {
             // when trimming white space.
             '\\' => if (is_multiline) &[2]u8{ '\\', '\\' } else &[1]u8{'\\'},
             'u' => u: {
-                if (!self.lexUnicodeEscape(t, 4, &hex)) {
+                if (!self.lexUnicodeEscape(4, &hex)) {
                     // error already reported
                     return error.BadStringEscape;
                 }
                 var num_written: usize = common.toUnicodeCodepoint(hex[0..4]) catch {
-                    const err_msg = self.formatError(
+                    self.reportError(
                         "Lexer: '\\u{s}' is not a valid unicode escape",
                         .{hex[0..4]},
                     );
-                    self.emit(t, .Error, err_msg, &self.position);
                     return error.BasicStringEscape;
                 };
                 break :u hex[0..num_written];
             },
             'U' => U: {
-                if (!self.lexUnicodeEscape(t, 8, &hex)) {
+                if (!self.lexUnicodeEscape(8, &hex)) {
                     // error already reported
                     return error.BadStringEscape;
                 }
                 var num_written: usize = common.toUnicodeCodepoint(hex[0..8]) catch {
-                    const err_msg = self.formatError(
+                    self.reportError(
                         "Lexer: '\\U{s}' is not a valid unicode escape",
                         .{hex[0..8]},
                     );
-                    self.emit(t, .Error, err_msg, &self.position);
                     return error.BasicStringEscape;
                 };
                 break :U hex[0..num_written];
             },
             else => {
-                const err_msg = self.formatError(
+                self.reportError(
                     "Lexer: bad string escape sequence, '\\{c}' | \\0x{X:0>2}",
                     .{ b, b },
                 );
-                self.emit(t, .Error, err_msg, &self.position);
                 return error.BadStringEscape;
             },
         };
 
-        self.token_buffer.appendSlice(bytes) catch |e| {
-            self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
-            return e;
+        self.token_buffer.appendSlice(bytes) catch {
+            self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
+            return;
         };
     }
 
-    fn lexHexEscape(self: *Self, t: *Token, out: []u8) bool {
-        for (0..2) |i| {
-            const b = self.nextByte() catch {
-                const err_msg = self.formatError(
-                    "Lexer: expected hexadecimal digit",
-                    .{},
-                );
-                self.emit(t, .Error, err_msg, &self.position);
-                return false;
-            };
-
-            if (!common.isHex(b)) {
-                const err_msg = self.formatError(
-                    "Lexer: expected hexadecimal digit found {c}",
-                    .{b},
-                );
-                self.emit(t, .Error, err_msg, &self.position);
-                return false;
-            }
-            out[i] = b;
-        }
-        return true;
-    }
-
-    fn lexUnicodeEscape(self: *Self, t: *Token, comptime width: u8, out: []u8) bool {
+    fn lexUnicodeEscape(self: *Self, comptime width: u8, out: []u8) bool {
         for (0..width) |i| {
             const b = self.nextByte() catch {
-                const err_msg = self.formatError(
+                self.reportError(
                     "Lexer: expected hexadecimal digit",
                     .{},
                 );
-                self.emit(t, .Error, err_msg, &self.position);
                 return false;
             };
 
             if (!common.isHex(b)) {
-                const err_msg = self.formatError(
+                self.reportError(
                     "Lexer: expected hexadecimal digit found {c}",
                     .{b},
                 );
-                self.emit(t, .Error, err_msg, &self.position);
                 return false;
             }
 
@@ -1081,74 +940,90 @@ pub const Lexer = struct {
     /// Used to determine how the number value should be processed.
     /// assumes there is at least a byte in the stream.
     fn lexNumber(self: *Self, t: *Token) void {
-        const current = self.popState();
-        debug.assert(current == lexNumber);
+        //TODO: logic for lexing number (floats and integers)
+        // could use a bit of refactoring.
 
-        self.lex_start = self.position;
         // guaranteed digit.
         var b = self.nextByte() catch unreachable;
         self.token_buffer.append(b) catch {
-            self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+            self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
             return;
         };
 
         if (b == '0') {
             // possibly a base speceific number.
-            const base = self.peekByte() catch 0x00;
+            const base = self.nextByte() catch 0x00;
             switch (base) {
                 'b' => {
-                    self.ignoreBytes(1);
                     self.token_buffer.append(base) catch {
-                        self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                        self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                         return;
                     };
-                    self.pushStateOrThrow(lexBinaryInteger, t);
+                    self.pushStateOrThrow(lexBinaryInteger);
                     return;
                 },
                 'o' => {
-                    self.ignoreBytes(1);
                     self.token_buffer.append(base) catch {
-                        self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                        self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                         return;
                     };
-                    self.pushStateOrThrow(lexOctalInteger, t);
+                    self.pushStateOrThrow(lexOctalInteger);
                     return;
                 },
                 'x' => {
-                    self.ignoreBytes(1);
                     self.token_buffer.append(base) catch {
-                        self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                        self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                         return;
                     };
-                    self.pushStateOrThrow(lexHexInteger, t);
+                    self.pushStateOrThrow(lexHexInteger);
                     return;
                 },
-                else => {},
+                0x00 => {},
+                else => self.unReadNByte(1),
             }
         }
 
         while (true) {
-            b = self.peekByte() catch break;
+            b = self.nextByte() catch |err| {
+                if (err == error.BadEOL) {
+                    self.reportError(
+                        "Lexer: bad newline character.",
+                        .{},
+                    );
+                    return;
+                }
+                break;
+            };
 
             if (common.isDigit(b) or b == '_') {
                 self.token_buffer.append(b) catch {
-                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                    self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                     return;
                 };
-                self.ignoreBytes(1);
                 continue;
             }
 
             switch (b) {
                 '.', 'e', 'E' => {
-                    self.pushStateOrThrow(lexFloat, t);
+                    self.token_buffer.append(b) catch {
+                        self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
+                        return;
+                    };
+                    self.pushStateOrThrow(lexFloat);
                     return;
                 },
                 '-', ':' => {
-                    self.pushStateOrThrow(lexDateTime, t);
+                    self.token_buffer.append(b) catch {
+                        self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
+                        return;
+                    };
+                    self.pushStateOrThrow(lexDateTime);
                     return;
                 },
-                else => break,
+                else => {
+                    self.unReadNByte(1);
+                    break;
+                },
             }
         }
         self.emit(t, .Integer, self.token_buffer.data(), &self.lex_start);
@@ -1156,18 +1031,25 @@ pub const Lexer = struct {
 
     /// assumes 0b is already consumed
     fn lexBinaryInteger(self: *Self, t: *Token) void {
-        const current = self.popState();
-        debug.assert(current == lexBinaryInteger);
-
         while (true) {
-            const b = self.nextByte() catch break;
+            const b = self.nextByte() catch |err| {
+                if (err == error.BadEOL) {
+                    self.reportError(
+                        "Lexer: bad newline character.",
+                        .{},
+                    );
+                    return;
+                }
+                break;
+            };
+
             if (!common.isBinary(b) and b != '_') {
-                self.toLastByte();
+                self.unReadNByte(1);
                 break;
             }
 
             self.token_buffer.append(b) catch {
-                self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                 return;
             };
         }
@@ -1176,17 +1058,25 @@ pub const Lexer = struct {
 
     /// assumes 0o is already consumed
     fn lexOctalInteger(self: *Self, t: *Token) void {
-        const current = self.popState();
-        debug.assert(current == lexOctalInteger);
         while (true) {
-            const b = self.nextByte() catch break;
+            const b = self.nextByte() catch |err| {
+                if (err == error.BadEOL) {
+                    self.reportError(
+                        "Lexer: bad newline character.",
+                        .{},
+                    );
+                    return;
+                }
+                break;
+            };
+
             if (!common.isOctal(b) and b != '_') {
-                self.toLastByte();
+                self.unReadNByte(1);
                 break;
             }
 
             self.token_buffer.append(b) catch {
-                self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                 return;
             };
         }
@@ -1194,32 +1084,45 @@ pub const Lexer = struct {
     }
 
     fn lexDecimalInteger(self: *Self, t: *Token) void {
-        const current = self.popState();
-        debug.assert(current == lexDecimalInteger);
         while (true) {
-            const b = self.nextByte() catch break;
+            const b = self.nextByte() catch |err| {
+                if (err == error.BadEOL) {
+                    self.reportError(
+                        "Lexer: bad newline character.",
+                        .{},
+                    );
+                    return;
+                }
+                break;
+            };
+
             if (common.isDigit(b) or b == '_') {
                 self.token_buffer.append(b) catch {
-                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                    self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                     return;
                 };
                 continue;
             }
 
-            // preparing to return
-            self.toLastByte();
-
             switch (b) {
                 '.', 'e', 'E', 'i', 'n' => {
                     // switch to lexing a float
-                    self.pushStateOrThrow(lexFloat, t);
+                    self.unReadNByte(1);
+                    self.pushStateOrThrow(lexFloat);
                     return;
                 },
                 '-', ':' => {
-                    self.pushStateOrThrow(lexDateTime, t);
+                    self.token_buffer.append(b) catch {
+                        self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
+                        return;
+                    };
+                    self.pushStateOrThrow(lexDateTime);
                     return;
                 },
-                else => break,
+                else => {
+                    self.unReadNByte(1);
+                    break;
+                },
             }
         }
         self.emit(t, .Integer, self.token_buffer.data(), &self.lex_start);
@@ -1227,17 +1130,25 @@ pub const Lexer = struct {
 
     /// assumes 0x is already consumed
     fn lexHexInteger(self: *Self, t: *Token) void {
-        const current = self.popState();
-        debug.assert(current == lexHexInteger);
         while (true) {
-            const b = self.nextByte() catch break;
+            const b = self.nextByte() catch |err| {
+                if (err == error.BadEOL) {
+                    self.reportError(
+                        "Lexer: bad newline character.",
+                        .{},
+                    );
+                    return;
+                }
+                break;
+            };
+
             if (!common.isHex(b) and b != '_') {
-                self.toLastByte();
+                self.unReadNByte(1);
                 break;
             }
 
             self.token_buffer.append(b) catch {
-                self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                 return;
             };
         }
@@ -1246,13 +1157,21 @@ pub const Lexer = struct {
 
     // lex float number
     fn lexFloat(self: *Self, t: *Token) void {
-        const current = self.popState();
-        debug.assert(current == lexFloat);
         while (true) {
-            const b = self.nextByte() catch break;
+            const b = self.nextByte() catch |err| {
+                if (err == error.BadEOL) {
+                    self.reportError(
+                        "Lexer: bad newline character.",
+                        .{},
+                    );
+                    return;
+                }
+                break;
+            };
+
             if (common.isDigit(b)) {
                 self.token_buffer.append(b) catch {
-                    self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                    self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                     return;
                 };
                 continue;
@@ -1261,37 +1180,35 @@ pub const Lexer = struct {
             switch (b) {
                 '-', '+', '_', 'e', 'E', '.' => {
                     self.token_buffer.append(b) catch {
-                        self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                        self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                         return;
                     };
                     continue;
                 },
                 'i' => {
                     if (!self.consumeByte('n') or !self.consumeByte('f')) {
-                        const err_msg = self.formatError("Lexer: Invalid float", .{});
-                        self.emit(t, .Error, err_msg, &self.position);
+                        self.reportError("Lexer: Invalid float", .{});
                         return;
                     }
                     self.token_buffer.appendSlice(&[_]u8{ 'i', 'n', 'f' }) catch {
-                        self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                        self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                         return;
                     };
                     break;
                 },
                 'n' => {
                     if (!self.consumeByte('a') or !self.consumeByte('n')) {
-                        const err_msg = self.formatError("Lexer: Invalid float", .{});
-                        self.emit(t, .Error, err_msg, &self.position);
+                        self.reportError("Lexer: Invalid float", .{});
                         return;
                     }
                     self.token_buffer.appendSlice(&[_]u8{ 'n', 'a', 'n' }) catch {
-                        self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                        self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                         return;
                     };
                     break;
                 },
                 else => {
-                    self.toLastByte();
+                    self.unReadNByte(1);
                     break;
                 },
             }
@@ -1299,67 +1216,18 @@ pub const Lexer = struct {
         self.emit(t, .Float, self.token_buffer.data(), &self.lex_start);
     }
 
-    /// expects a boolean string
-    /// assumes there is at least a byte in stream.
-    fn lexBoolean(self: *Self, t: *Token) void {
-        const current = self.popState();
-        debug.assert(current == lexBoolean);
-        self.lex_start = self.position;
-        var initial = self.peekByte() catch unreachable;
-        var boolean: [5]u8 = undefined;
-        var count: usize = 0;
-        switch (initial) {
-            't' => {
-                count = self.nextSlice(boolean[0..4]) catch return;
-                if (count != 4) {
-                    const err_msg = self.formatError(
-                        "Lexer: unexpected end of stream",
-                        .{},
-                    );
-                    self.emit(t, .Error, err_msg, &self.position);
-                    return;
-                }
-                if (!mem.eql(u8, boolean[0..4], "true")) {
-                    const err_msg = self.formatError(
-                        "Lexer: Expected boolean value found '{s}'",
-                        .{boolean},
-                    );
-                    self.emit(t, .Error, err_msg, &self.position);
-                    return;
-                }
-            },
-            'f' => {
-                count = self.nextSlice(&boolean) catch return;
-                if (count != 5) {
-                    const err_msg = self.formatError(
-                        "Lexer: unexpected end of stream",
-                        .{},
-                    );
-                    self.emit(t, .Error, err_msg, &self.position);
-                    return;
-                }
-                if (!mem.eql(u8, &boolean, "false")) {
-                    const err_msg = self.formatError(
-                        "Lexer: Expected boolean value found '{s}'",
-                        .{boolean},
-                    );
-                    self.emit(t, .Error, err_msg, &self.position);
-                    return;
-                }
-            },
-            else => unreachable,
-        }
-
-        self.token_buffer.appendSlice(boolean[0..count]) catch {
-            self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
-            return;
-        };
-        self.emit(t, .Boolean, self.token_buffer.data(), &self.lex_start);
-    }
-
     fn lexDateTime(self: *Self, t: *Token) void {
         while (true) {
-            var b = self.peekByte() catch break;
+            var b = self.nextByte() catch |err| {
+                if (err == error.BadEOL) {
+                    self.reportError(
+                        "Lexer: bad newline character.",
+                        .{},
+                    );
+                    return;
+                }
+                break;
+            };
 
             b = switch (b) {
                 '0'...'9',
@@ -1370,57 +1238,121 @@ pub const Lexer = struct {
                 '-',
                 '.',
                 => b,
+                'z' => 'Z',
                 ' ', 't' => {
                     // in case of a space ' ' we need to read ahead
                     // and make sure this isn't the end.
-                    self.ignoreBytes(1);
-                    var c = self.nextByte() catch break;
+                    var c = self.nextByte() catch |err| {
+                        if (err == error.BadEOL) {
+                            self.reportError(
+                                "Lexer: bad newline character.",
+                                .{},
+                            );
+                            return;
+                        }
+                        break;
+                    };
                     if (common.isDigit(c)) {
                         self.token_buffer.appendSlice(&.{ 'T', c }) catch {
-                            self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                            self.reportError(
+                                ERR_MSG_OUT_OF_MEMORY,
+                                .{},
+                            );
                             return;
                         };
                         continue;
                     } else {
                         // we are done.
-                        self.toLastByte();
+                        self.unReadNByte(1);
                         break;
                     }
                 },
-                'z' => 'Z',
-                else => break,
+                else => {
+                    self.unReadNByte(1);
+                    break;
+                },
             };
             self.token_buffer.append(b) catch {
-                self.emit(t, .Error, ERR_MSG_OUT_OF_MEMORY, &self.position);
+                self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                 return;
             };
-            self.ignoreBytes(1);
         }
 
-        const current = self.popState();
-        debug.assert(current == lexDateTime);
         self.emit(t, .DateTime, self.token_buffer.data(), &self.lex_start);
+    }
+
+    /// expects a boolean string
+    /// assumes there is at least a byte in stream.
+    fn lexBoolean(self: *Self, t: *Token) void {
+        self.lex_start = self.position;
+        var initial = self.nextByte() catch unreachable;
+        self.unReadNByte(1);
+        var boolean: [5]u8 = undefined;
+        var count: usize = 0;
+        switch (initial) {
+            't' => {
+                count = self.nextSlice(boolean[0..4]) catch return;
+                if (count != 4) {
+                    self.reportError(
+                        "Lexer: unexpected end of stream",
+                        .{},
+                    );
+                    return;
+                }
+                if (!mem.eql(u8, boolean[0..4], "true")) {
+                    self.reportError(
+                        "Lexer: Expected boolean value found '{s}'",
+                        .{boolean},
+                    );
+                    return;
+                }
+            },
+            'f' => {
+                count = self.nextSlice(&boolean) catch return;
+                if (count != 5) {
+                    self.reportError(
+                        "Lexer: unexpected end of stream",
+                        .{},
+                    );
+                    return;
+                }
+                if (!mem.eql(u8, &boolean, "false")) {
+                    self.reportError(
+                        "Lexer: Expected boolean value found '{s}'",
+                        .{boolean},
+                    );
+                    return;
+                }
+            },
+            else => unreachable,
+        }
+
+        self.token_buffer.appendSlice(boolean[0..count]) catch {
+            self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
+            return;
+        };
+
+        self.emit(t, .Boolean, self.token_buffer.data(), &self.lex_start);
     }
 
     /// assumes the starting bracket '[' was already consumed.
     fn lexArrayValue(self: *Self, t: *Token) void {
-        self.lex_start = self.position;
         while (true) {
             const b = self.nextByte() catch |err| {
-                const err_msg = if (err == error.BadEOL)
-                    self.formatError(
+                if (err == error.BadEOL) {
+                    self.reportError(
                         "Lexer: Expected a newline after carriage return",
                         .{},
-                    )
-                else
-                    self.formatError(
+                    );
+                } else {
+                    self.reportError(
                         "Lexer: expected array closing delimiter ']' before end of stream",
                         .{},
                     );
-
-                self.emit(t, .Error, err_msg, &self.position);
+                }
                 return;
             };
+
             if (common.isNewLine(b) or common.isWhiteSpace(b)) {
                 self.skipBytes(&(WHITESPACE ++ NEWLINE));
                 continue;
@@ -1428,50 +1360,47 @@ pub const Lexer = struct {
 
             switch (b) {
                 '#' => {
-                    self.pushStateOrThrow(lexComment, t);
+                    self.pushStateOrThrow(lexArrayValue);
+                    self.pushStateOrThrow(lexComment);
                     return;
                 },
                 ',' => {
-                    const err_msg = self.formatError(
+                    self.reportError(
                         "Lexer: Unexpected comma ',' inside array",
                         .{},
                     );
-                    self.emit(t, .Error, err_msg, &self.position);
                     return;
                 },
                 ']' => break,
                 else => {
-                    self.toLastByte();
-                    self.pushStateOrThrow(lexArrayValueEnd, t);
-                    self.pushStateOrThrow(lexValue, t);
+                    self.unReadNByte(1);
+                    self.pushStateOrThrow(lexArrayValueEnd);
+                    self.pushStateOrThrow(lexValue);
                     return;
                 },
             }
         }
-
-        const current = self.popState();
-        debug.assert(current == lexArrayValue);
 
         self.emit(t, .ArrayEnd, null, &self.lex_start);
     }
 
     fn lexArrayValueEnd(self: *Self, t: *Token) void {
         while (true) {
-            const b = self.peekByte() catch |err| {
-                const err_msg = if (err == error.BadEOL)
-                    self.formatError(
+            const b = self.nextByte() catch |err| {
+                if (err == error.BadEOL) {
+                    self.reportError(
                         "Lexer: Expected a newline after carriage return",
                         .{},
-                    )
-                else
-                    self.formatError(
+                    );
+                } else {
+                    self.reportError(
                         "Lexer: expected array closing delimiter ']' before end of stream",
                         .{},
                     );
-
-                self.emit(t, .Error, err_msg, &self.position);
+                }
                 return;
             };
+
             if (common.isNewLine(b) or common.isWhiteSpace(b)) {
                 self.skipBytes(&(WHITESPACE ++ NEWLINE));
                 continue;
@@ -1479,39 +1408,49 @@ pub const Lexer = struct {
 
             switch (b) {
                 '#' => {
-                    _ = self.nextByte() catch unreachable;
-                    self.pushStateOrThrow(lexComment, t);
+                    self.pushStateOrThrow(lexArrayValueEnd);
+                    self.pushStateOrThrow(lexComment);
                     return;
                 },
                 ',' => {
-                    _ = self.nextByte() catch unreachable;
-                    break;
+                    self.pushStateOrThrow(lexArrayValue);
+                    return;
                 },
                 ']' => break,
                 else => {
-                    const err_msg = self.formatError(
+                    self.reportError(
                         "Lexer: expected comma ',' or array closing bracket ']' found {c}",
                         .{b},
                     );
-                    self.emit(t, .Error, err_msg, &self.position);
-                    return;
                 },
             }
         }
-        const current = self.popState();
-        debug.assert(current == lexArrayValueEnd);
+        self.emit(t, .ArrayEnd, null, &self.lex_start);
     }
 
     /// assumes '{' is already consumed.
     fn lexInlineTabValue(self: *Self, t: *Token) void {
         while (true) {
-            const b = self.nextByte() catch break;
+            const b = self.nextByte() catch |err| {
+                if (err == error.BadEOL) {
+                    self.reportError(
+                        "Lexer: Expected a newline after carriage return",
+                        .{},
+                    );
+                } else {
+                    self.reportError(
+                        "Lexer: expected array closing delimiter '}}' before end of stream",
+                        .{},
+                    );
+                }
+                return;
+            };
+
             if (common.isNewLine(b)) {
-                const err_msg = self.formatError(
+                self.reportError(
                     "Lexer: Newline not allowed inside inline tables.",
                     .{},
                 );
-                self.emit(t, .Error, err_msg, &self.position);
                 return;
             }
 
@@ -1522,42 +1461,53 @@ pub const Lexer = struct {
 
             switch (b) {
                 '#' => {
-                    self.pushStateOrThrow(lexComment, t);
+                    self.pushStateOrThrow(lexInlineTabValue);
+                    self.pushStateOrThrow(lexComment);
                     return;
                 },
                 ',' => {
-                    const err_msg = self.formatError(
-                        "Lexer: Unexpected comma ',' inside array",
+                    self.reportError(
+                        "Lexer: Unexpected comma ',' inside inline table.",
                         .{},
                     );
-                    self.emit(t, .Error, err_msg, &self.position);
                     return;
                 },
                 '}' => break,
                 else => {
-                    self.toLastByte();
-                    self.pushStateOrThrow(lexInlineTabValueEnd, t);
-                    self.pushStateOrThrow(lexKey, t);
+                    self.unReadNByte(1);
+                    self.pushStateOrThrow(lexInlineTabValueEnd);
+                    self.lexKey();
+                    // self.pushStateOrThrow(lexKey);
                     return;
                 },
             }
         }
-
-        const current = self.popState();
-        debug.assert(current == lexInlineTabValue);
 
         self.emit(t, .InlineTableEnd, null, &self.lex_start);
     }
 
     fn lexInlineTabValueEnd(self: *Self, t: *Token) void {
         while (true) {
-            const b = self.peekByte() catch break;
+            const b = self.nextByte() catch |err| {
+                if (err == error.BadEOL) {
+                    self.reportError(
+                        "Lexer: Expected a newline after carriage return",
+                        .{},
+                    );
+                } else {
+                    self.reportError(
+                        "Lexer: expected array closing delimiter '}}' before end of stream",
+                        .{},
+                    );
+                }
+                return;
+            };
+
             if (common.isNewLine(b)) {
-                const err_msg = self.formatError(
+                self.reportError(
                     "Lexer: Newline not allowed inside inline tables.",
                     .{},
                 );
-                self.emit(t, .Error, err_msg, &self.position);
                 return;
             }
 
@@ -1568,62 +1518,70 @@ pub const Lexer = struct {
 
             switch (b) {
                 '#' => {
-                    self.ignoreBytes(1);
-                    self.pushStateOrThrow(lexComment, t);
+                    self.pushStateOrThrow(lexInlineTabValueEnd);
+                    self.pushStateOrThrow(lexComment);
                     return;
                 },
                 ',' => {
-                    self.ignoreBytes(1);
                     self.skipBytes(&WHITESPACE);
                     if (self.consumeByte('}')) {
-                        const err_msg = self.formatError(
+                        self.reportError(
                             "Lexer: a trailing comma ',' is not permitted after the last key/value pair in an inline table.",
                             .{},
                         );
-                        self.emit(t, .Error, err_msg, &self.position);
                         return;
                     }
-                    break;
+                    self.pushStateOrThrow(lexInlineTabValue);
+                    return;
                 },
                 '}' => break,
                 else => {
-                    const err_msg = self.formatError(
+                    self.reportError(
                         "Lexer: expected comma ',' or an inline table terminator '}}' found '{c}'",
                         .{b},
                     );
-                    self.emit(t, .Error, err_msg, &self.position);
                     return;
                 },
             }
         }
-        const current = self.popState();
-        debug.assert(current == lexInlineTabValueEnd);
+        self.emit(t, .InlineTableEnd, null, &self.lex_start);
     }
 
-    /// Used as a fallback when the lexer encounters an error.
-    fn lexOnError(self: *Self, t: *Token) void {
-        const err_msg = self.formatError(
-            "Lexer: Input Stream contains errors",
-            .{},
-        );
-        self.emit(t, .Error, err_msg, &self.position);
+    /// catch all after reaching end of stream
+    fn lexEndOfStreamLoop(self: *Self, t: *Token) void {
+        self.pushStateOrThrow(lexEndOfStreamLoop);
+        self.emit(t, .EndOfStream, null, &self.position);
     }
 
-    fn formatError(self: *Self, comptime format: []const u8, args: anytype) []const u8 {
+    fn reportError(self: *Self, comptime format: []const u8, args: anytype) void {
+        self.formatError(format, args);
+        self.clearState();
+    }
+
+    inline fn formatError(
+        self: *Self,
+        comptime format: []const u8,
+        args: anytype,
+    ) void {
         self.token_buffer.clearContent();
         self.token_buffer.print(format, args) catch {
-            return Self.ERR_MSG_GENERIC;
+            self.err_msg = Self.ERR_MSG_OUT_OF_MEMORY;
+            return;
         };
-        return self.token_buffer.data();
+        self.err_msg = self.token_buffer.data();
     }
 
-    pub fn init(allocator: mem.Allocator, input: *io.StreamSource) mem.Allocator.Error!Self {
+    pub fn init(
+        allocator: mem.Allocator,
+        input: *io.StreamSource,
+    ) mem.Allocator.Error!Self {
         var state_func_stack = try Stack(?LexFuncPtr).initCapacity(allocator, 8);
         errdefer state_func_stack.deinit();
-        state_func_stack.append(lexRoot) catch unreachable; // we just allocated;
+        state_func_stack.append(lexEndOfStreamLoop) catch unreachable;
+        state_func_stack.append(lexRoot) catch unreachable;
         return .{
             .input = input,
-            .index = 0,
+            .read_idx = 0,
             .position = .{ .line = 1, .column = 1 },
             .lex_start = .{ .line = 1, .column = 1 },
             .token_buffer = try common.DynArray(u8).initCapacity(
@@ -1631,6 +1589,7 @@ pub const Lexer = struct {
                 opt.LEXER_BUFFER_SIZE,
             ),
             .state_func_stack = state_func_stack,
+            .err_msg = null,
         };
     }
 
@@ -1646,18 +1605,22 @@ pub const Lexer = struct {
     pub fn nextToken(self: *Self, t: *Token) void {
         self.token_buffer.clearContent();
         while (true) {
-            if (LOG_LEXER_STATE) {
+            if (opt.LOG_LEXER_STATE) {
                 self.logState();
             }
-            debug.assert(self.state_func_stack.items.len > 0);
-            const lexFunc = self.state_func_stack.getLast() orelse {
-                // lexFunc == EMIT_FUNC == null
-                _ = self.popState();
-                break;
-            };
-            lexFunc(self, t);
+
+            if (self.nextState()) |func| {
+                func(self, t);
+                continue;
+            }
+
+            break;
         }
-        self.lex_start = self.position;
+
+        // report any error we ran into.
+        if (self.err_msg) |msg| {
+            self.emit(t, .Error, msg, &self.position);
+        }
     }
 
     fn logState(self: *Self) void {
@@ -1668,7 +1631,7 @@ pub const Lexer = struct {
             std.debug.print("| {s} |\n", .{functionToString(func)});
             std.debug.print("-------------------- :\n", .{});
         }
-        std.debug.print("[+] Stream offset: {d}\n", .{self.index});
+        std.debug.print("[+] Stream offset: {d}\n", .{self.read_idx});
         std.debug.print("=========================\n", .{});
     }
 
@@ -1694,23 +1657,14 @@ pub const Lexer = struct {
         if (f == lexFloat) {
             return "lexFloat";
         }
-        if (f == lexQuottedKey) {
-            return "lexQuottedKey";
-        }
         if (f == lexBareKey) {
             return "lexBareKey";
         }
         if (f == lexBoolean) {
             return "lexBoolean";
         }
-        if (f == lexKey) {
-            return "lexKey";
-        }
         if (f == lexKeyEnd) {
             return "lexKeyEnd";
-        }
-        if (f == lexOnError) {
-            return "lexOnError";
         }
         if (f == lexBinaryInteger) {
             return "lexBinaryInteger";
@@ -1754,12 +1708,576 @@ pub const Lexer = struct {
         if (f == lexTableEnd) {
             return "lexTableEnd";
         }
-        if (f == lexTableName) {
-            return "lexTableName";
-        }
         if (f == lexTableNameEnd) {
             return "lexTableNameEnd";
+        }
+        if (f == lexEndOfStreamLoop) {
+            return "lexEndOfStreamLoop";
         }
         return "!!!Function Not found";
     }
 };
+
+test "lex basic" {
+    const testing = std.testing;
+    const src =
+        \\title = "TOML Example"
+    ;
+    var ss = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
+    var lexer = try Lexer.init(testing.allocator, &ss);
+    defer lexer.deinit();
+    var t: Token = undefined;
+    const expected = [_]TokenTag{
+        .Key,
+        .BasicString,
+        .EndOfStream,
+    };
+    var count: usize = 0;
+    while (true) : (count += 1) {
+        lexer.nextToken(&t);
+        testing.expect(t.tag != .Error) catch |e| {
+            std.log.err("{s}", .{t.value.?});
+            return e;
+        };
+        // debug.print("({s}):{?s}\n", .{ @tagName(t.tag), t.value });
+        try testing.expect(t.tag == expected[count]);
+        if (t.tag == .EndOfStream) {
+            break;
+        }
+    }
+}
+
+test "lex string" {
+    const testing = std.testing;
+    const src =
+        \\# This is a comment
+        \\my_string = 'Hello world!'
+        \\my_string3 = "Hello w\u3100rld!"
+    ;
+    var ss = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
+
+    var lexer = try Lexer.init(testing.allocator, &ss);
+    defer lexer.deinit();
+    var t: Token = undefined;
+    const expected = [_]TokenTag{
+        .Key,
+        .LiteralString,
+        .Key,
+        .BasicString,
+        .EndOfStream,
+    };
+    var count: usize = 0;
+    while (true) : (count += 1) {
+        lexer.nextToken(&t);
+        testing.expect(t.tag != .Error) catch |e| {
+            std.log.err("{s}", .{t.value.?});
+            return e;
+        };
+        // debug.print("({s}):{?s}\n", .{ @tagName(t.tag), t.value });
+        try testing.expect(t.tag == expected[count]);
+        if (t.tag == .EndOfStream) {
+            break;
+        }
+    }
+}
+
+test "lex integer" {
+    const testing = std.testing;
+    const src =
+        \\int1 = +99
+        \\int2 = 42
+        \\int3 = 0
+        \\int4 = -17
+        \\int5 = 1_000
+        \\int6 = 5_349_221
+        \\int7 = 53_49_221  # Indian number system grouping
+        \\int8 = 1_2_3_4_5  # VALID but discouraged
+        \\# hexadecimal with prefix `0x`
+        \\hex1 = 0xDEADBEEF
+        \\hex2 = 0xdeadbeef
+        \\hex3 = 0xdead_beef
+        \\# octal with prefix `0o`
+        \\oct1 = 0o01234567
+        \\oct2 = 0o755 # useful for Unix file permissions
+        \\# binary with prefix `0b`
+        \\bin1 = 0b11010110
+    ;
+    var ss = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
+
+    var lexer = try Lexer.init(testing.allocator, &ss);
+    defer lexer.deinit();
+    var t: Token = undefined;
+    const expected = [_]TokenTag{
+        .Key,
+        .Integer,
+        .Key,
+        .Integer,
+        .Key,
+        .Integer,
+        .Key,
+        .Integer,
+        .Key,
+        .Integer,
+        .Key,
+        .Integer,
+        .Key,
+        .Integer,
+        .Key,
+        .Integer,
+        .Key,
+        .Integer,
+        .Key,
+        .Integer,
+        .Key,
+        .Integer,
+        .Key,
+        .Integer,
+        .Key,
+        .Integer,
+        .Key,
+        .Integer,
+        .EndOfStream,
+    };
+    var count: usize = 0;
+    while (true) : (count += 1) {
+        lexer.nextToken(&t);
+        testing.expect(t.tag != .Error) catch |e| {
+            std.log.err("{s}", .{t.value.?});
+            return e;
+        };
+        // debug.print("({s}):{?s}\n", .{ @tagName(t.tag), t.value });
+        try testing.expect(t.tag == expected[count]);
+        if (t.tag == .EndOfStream) {
+            break;
+        }
+    }
+}
+
+test "lex float" {
+    const testing = std.testing;
+    const src =
+        \\# fractional
+        \\flt1 = +1.0
+        \\flt2 = 3.1415
+        \\flt3 = -0.01
+        \\# exponent
+        \\flt4 = 5e+22
+        \\flt5 = 1e06
+        \\flt6 = -2E-2
+        \\# both
+        \\flt7 = 6.626e-34
+        \\# infinity
+        \\sf1 = inf  # positive infinity
+        \\sf2 = +inf # positive infinity
+        \\sf3 = -inf # negative infinity
+        \\# not a number
+        \\sf4 = nan  # actual sNaN/qNaN encoding is implementation-specific
+        \\sf5 = +nan # same as `nan`
+        \\sf6 = -nan # valid, actual encoding is implementation-specific
+    ;
+    var ss = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
+
+    var lexer = try Lexer.init(testing.allocator, &ss);
+    defer lexer.deinit();
+    var t: Token = undefined;
+    const expected = [_]TokenTag{
+        .Key,
+        .Float,
+        .Key,
+        .Float,
+        .Key,
+        .Float,
+        .Key,
+        .Float,
+        .Key,
+        .Float,
+        .Key,
+        .Float,
+        .Key,
+        .Float,
+        .Key,
+        .Float,
+        .Key,
+        .Float,
+        .Key,
+        .Float,
+        .Key,
+        .Float,
+        .Key,
+        .Float,
+        .Key,
+        .Float,
+        .EndOfStream,
+    };
+    var count: usize = 0;
+    while (true) : (count += 1) {
+        lexer.nextToken(&t);
+        testing.expect(t.tag != .Error) catch |e| {
+            std.log.err("{s}", .{t.value.?});
+            return e;
+        };
+        // debug.print("({s}):{?s}\n", .{ @tagName(t.tag), t.value });
+        try testing.expect(t.tag == expected[count]);
+        if (t.tag == .EndOfStream) {
+            break;
+        }
+    }
+}
+
+test "lex bool" {
+    const testing = std.testing;
+    const src =
+        \\bool1 = true
+        \\bool2 = false
+    ;
+    var ss = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
+
+    var lexer = try Lexer.init(testing.allocator, &ss);
+    defer lexer.deinit();
+    var t: Token = undefined;
+    const expected = [_]TokenTag{
+        .Key,
+        .Boolean,
+        .Key,
+        .Boolean,
+        .EndOfStream,
+    };
+    var count: usize = 0;
+    while (true) : (count += 1) {
+        lexer.nextToken(&t);
+        testing.expect(t.tag != .Error) catch |e| {
+            std.log.err("{s}", .{t.value.?});
+            return e;
+        };
+        // debug.print("({s}):{?s}\n", .{ @tagName(t.tag), t.value });
+        try testing.expect(t.tag == expected[count]);
+        if (t.tag == .EndOfStream) {
+            break;
+        }
+    }
+}
+
+test "lex datetime" {
+    const testing = std.testing;
+    const src =
+        \\odt1 = 1979-05-27T07:32:00Z
+        \\odt2 = 1979-05-27T00:32:00-07:00
+        \\odt3 = 1979-05-27T00:32:00.999999-07:00
+    ;
+    var ss = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
+
+    var lexer = try Lexer.init(testing.allocator, &ss);
+    defer lexer.deinit();
+    var t: Token = undefined;
+    const expected = [_]TokenTag{
+        .Key,
+        .DateTime,
+        .Key,
+        .DateTime,
+        .Key,
+        .DateTime,
+        .EndOfStream,
+    };
+    var count: usize = 0;
+    while (true) : (count += 1) {
+        lexer.nextToken(&t);
+        testing.expect(t.tag != .Error) catch |e| {
+            std.log.err("{s}", .{t.value.?});
+            return e;
+        };
+        // debug.print("({s}):{?s}\n", .{ @tagName(t.tag), t.value });
+        try testing.expect(t.tag == expected[count]);
+        if (t.tag == .EndOfStream) {
+            break;
+        }
+    }
+}
+
+test "lex array" {
+    const testing = std.testing;
+    const src =
+        \\numbers = [ 0.1, 0.2, 0.5, 1, 2, 5 ]
+        \\nested_arrays_of_ints = [ [ 1, 2 ], [3, 4, 5] ]
+        \\string_array = [ "all", 'strings', """are the same""", '''type''' ]
+        \\
+        \\# Mixed-type arrays are allowed
+        \\contributors = [
+        \\  "Foo Bar <foo@example.com>",
+        \\  { name = "Baz Qux", email = "bazqux@example.com", url = "https://example.com/bazqux" }
+        \\]
+        \\
+    ;
+    var ss = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
+
+    var lexer = try Lexer.init(testing.allocator, &ss);
+    defer lexer.deinit();
+    var t: Token = undefined;
+    const expected = [_]TokenTag{
+        .Key,
+        .ArrayStart,
+        .Float,
+        .Float,
+        .Float,
+        .Integer,
+        .Integer,
+        .Integer,
+        .ArrayEnd,
+        .Key,
+        .ArrayStart,
+        .ArrayStart,
+        .Integer,
+        .Integer,
+        .ArrayEnd,
+        .ArrayStart,
+        .Integer,
+        .Integer,
+        .Integer,
+        .ArrayEnd,
+        .ArrayEnd,
+        .Key,
+        .ArrayStart,
+        .BasicString,
+        .LiteralString,
+        .MultiLineBasicString,
+        .MultiLineLiteralString,
+        .ArrayEnd,
+        .Key,
+        .ArrayStart,
+        .BasicString,
+        .InlineTableStart,
+        .Key,
+        .BasicString,
+        .Key,
+        .BasicString,
+        .Key,
+        .BasicString,
+        .InlineTableEnd,
+        .ArrayEnd,
+        .EndOfStream,
+    };
+    var count: usize = 0;
+    while (true) : (count += 1) {
+        lexer.nextToken(&t);
+        testing.expect(t.tag != .Error) catch |e| {
+            std.log.err("{s}", .{t.value.?});
+            return e;
+        };
+        // debug.print("({s}):{?s}\n", .{ @tagName(t.tag), t.value });
+        try testing.expect(t.tag == expected[count]);
+        if (t.tag == .EndOfStream) {
+            break;
+        }
+    }
+}
+
+test "lex inline table" {
+    const testing = std.testing;
+    const src =
+        \\name = { first = "Tom", last = "Preston-Werner" }
+        \\point = { x = 1, y = 2 }
+        \\animal = { type.name = "pug" }
+    ;
+    var ss = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
+
+    var lexer = try Lexer.init(testing.allocator, &ss);
+    defer lexer.deinit();
+    var t: Token = undefined;
+    const expected = [_]TokenTag{
+        .Key,
+        .InlineTableStart,
+        .Key,
+        .BasicString,
+        .Key,
+        .BasicString,
+        .InlineTableEnd,
+        .Key,
+        .InlineTableStart,
+        .Key,
+        .Integer,
+        .Key,
+        .Integer,
+        .InlineTableEnd,
+        .Key,
+        .InlineTableStart,
+        .Key,
+        .Dot,
+        .Key,
+        .BasicString,
+        .InlineTableEnd,
+        .EndOfStream,
+    };
+    var count: usize = 0;
+    while (true) : (count += 1) {
+        lexer.nextToken(&t);
+        testing.expect(t.tag != .Error) catch |e| {
+            std.log.err("{s}", .{t.value.?});
+            return e;
+        };
+        // debug.print("({s}):{?s}\n", .{ @tagName(t.tag), t.value });
+        try testing.expect(t.tag == expected[count]);
+        if (t.tag == .EndOfStream) {
+            break;
+        }
+    }
+}
+
+test "lex table" {
+    const testing = std.testing;
+    const src =
+        \\[table-1]
+        \\key1 = "some string"
+        \\key2 = 123
+        \\[dog."tater.man"]
+        \\type.name = "pug"
+        \\[ g .  h  . i ]    # same as [g.h.i]
+        \\[ j . "ʞ" . 'l' ]  # same as [j."ʞ".'l']
+    ;
+    var ss = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
+
+    var lexer = try Lexer.init(testing.allocator, &ss);
+    defer lexer.deinit();
+    var t: Token = undefined;
+    const expected = [_]TokenTag{
+        .TableStart,
+        .Key,
+        .TableEnd,
+        .Key,
+        .BasicString,
+        .Key,
+        .Integer,
+        .TableStart,
+        .Key,
+        .Dot,
+        .Key,
+        .TableEnd,
+        .Key,
+        .Dot,
+        .Key,
+        .BasicString,
+        .TableStart,
+        .Key,
+        .Dot,
+        .Key,
+        .Dot,
+        .Key,
+        .TableEnd,
+        .TableStart,
+        .Key,
+        .Dot,
+        .Key,
+        .Dot,
+        .Key,
+        .TableEnd,
+        .EndOfStream,
+    };
+    var count: usize = 0;
+    while (true) : (count += 1) {
+        lexer.nextToken(&t);
+        testing.expect(t.tag != .Error) catch |e| {
+            std.log.err("{s}", .{t.value.?});
+            return e;
+        };
+        // debug.print("({s}):{?s}\n", .{ @tagName(t.tag), t.value });
+        try testing.expect(t.tag == expected[count]);
+        if (t.tag == .EndOfStream) {
+            break;
+        }
+    }
+}
+
+test "lex array of tables" {
+    const testing = std.testing;
+    const src =
+        \\[[fruits]]
+        \\name = "apple"
+        \\
+        \\[fruits.physical]  # subtable
+        \\color = "red"
+        \\shape = "round"
+    ;
+    var ss = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
+
+    var lexer = try Lexer.init(testing.allocator, &ss);
+    defer lexer.deinit();
+    var t: Token = undefined;
+    const expected = [_]TokenTag{
+        .ArrayTableStart,
+        .Key,
+        .ArrayTableEnd,
+        .Key,
+        .BasicString,
+        .TableStart,
+        .Key,
+        .Dot,
+        .Key,
+        .TableEnd,
+        .Key,
+        .BasicString,
+        .Key,
+        .BasicString,
+        .EndOfStream,
+    };
+    var count: usize = 0;
+    while (true) : (count += 1) {
+        lexer.nextToken(&t);
+        testing.expect(t.tag != .Error) catch |e| {
+            std.log.err("{s}", .{t.value.?});
+            return e;
+        };
+        // debug.print("({s}):{?s}\n", .{ @tagName(t.tag), t.value });
+        try testing.expect(t.tag == expected[count]);
+        if (t.tag == .EndOfStream) {
+            break;
+        }
+    }
+}

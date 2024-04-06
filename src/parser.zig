@@ -154,11 +154,13 @@ pub const Parser = struct {
         try self.root.ensureTotalCapacity(opt.DEFAULT_HASHMAP_SIZE);
         try self.implicit_map.ensureTotalCapacity(16);
         try self.inline_map.ensureTotalCapacity(16);
+
         var key_path = try common.DynArray(dt.Key).initCapacity(
             self.base_allocator,
             opt.DEFAULT_ARRAY_SIZE,
         );
         defer key_path.deinit();
+
         self.state = .{ .context = .Table, .target = &self.root, .key = DEBUG_KEY };
 
         skipUTF16BOM(toml_input);
@@ -168,8 +170,8 @@ pub const Parser = struct {
         var token: lex.Token = undefined;
         while (true) {
             lexer.nextToken(&token);
-            switch (token.type) {
-                .EOS => break,
+            switch (token.tag) {
+                .EndOfStream => break,
                 .Error => {
                     // TODO: make error message reporting opt-in by the caller.
                     log.err(
@@ -239,10 +241,12 @@ pub const Parser = struct {
                 },
             }
         }
+
         self.implicit_map.clearAndFree();
         self.inline_map.clearAndFree();
         self.array_stack.clearRetainingCapacity();
         self.state_stack.clearRetainingCapacity();
+
         return &self.root;
     }
 
@@ -251,7 +255,7 @@ pub const Parser = struct {
         t: *const lex.Token,
         v: *dt.TomlValue,
     ) (mem.Allocator.Error || Parser.Error)!void {
-        switch (t.type) {
+        switch (t.tag) {
             .Integer => {
                 if (!isValidNumber(t.value.?)) {
                     log.err("Parser: '{s}' isn't a valid number", .{t.value.?});
@@ -283,14 +287,6 @@ pub const Parser = struct {
                 v.* = dt.TomlValue{ .Float = float };
             },
             .BasicString => {
-                // we don't own the slice in token.value so copy it.
-                if (!common.isValidUTF8(t.value.?)) {
-                    log.err(
-                        "Parser: string '{s}' contains invalid UTF-8 sequence.",
-                        .{t.value.?},
-                    );
-                    return Error.InvalidString;
-                }
                 const string = try allocator.alloc(u8, t.value.?.len);
                 @memcpy(string, t.value.?);
                 v.* = dt.TomlValue{ .String = string };
@@ -300,39 +296,15 @@ pub const Parser = struct {
                     allocator,
                     stripInitialNewline(t.value.?),
                 );
-                if (!common.isValidUTF8(string)) {
-                    log.err(
-                        "Parser: string '{s}' contains invalid UTF-8 sequence.",
-                        .{t.value.?},
-                    );
-                    allocator.free(string);
-                    return Error.InvalidString;
-                }
                 v.* = dt.TomlValue{ .String = string };
             },
             .LiteralString => {
-                // we don't own the slice in token.value so copy it.
-                if (!common.isValidUTF8(t.value.?)) {
-                    log.err(
-                        "Parser: string '{s}' contains invalid UTF-8 sequence.",
-                        .{t.value.?},
-                    );
-                    return Error.InvalidString;
-                }
                 const string = try allocator.alloc(u8, t.value.?.len);
                 @memcpy(string, t.value.?);
                 v.* = dt.TomlValue{ .String = string };
             },
             .MultiLineLiteralString => {
                 const slice = stripInitialNewline(t.value.?);
-                if (!common.isValidUTF8(slice)) {
-                    log.err(
-                        "Parser: string '{s}' contains invalid UTF-8 sequence.",
-                        .{t.value.?},
-                    );
-                    return Error.InvalidString;
-                }
-                // we don't own the slice in token.value so copy it.
                 const string = try allocator.alloc(u8, slice.len);
                 @memcpy(string, slice);
                 v.* = dt.TomlValue{ .String = string };
@@ -792,249 +764,3 @@ pub const Parser = struct {
         return valid;
     }
 };
-
-test "lex string" {
-    const testing = std.testing;
-    const src =
-        \\# This is a comment
-        \\my_string = 'Hello world!'
-        \\my_string2 = "Hello w\x31rld!"
-        \\my_string3 = "Hello w\u3100rld!"
-        \\my_string4 = """Hello w\U41520000rld!"""
-    ;
-    var ss = io.StreamSource{
-        .const_buffer = io.FixedBufferStream([]const u8){
-            .buffer = src,
-            .pos = 0,
-        },
-    };
-
-    var p = try Parser.init(testing.allocator, &ss);
-    defer p.deinit();
-
-    try p.parseDebug();
-}
-
-test "lex integer" {
-    const testing = std.testing;
-    const src =
-        \\int1 = +99
-        \\int2 = 42
-        \\int3 = 0
-        \\int4 = -17
-        \\int5 = 1_000
-        \\int6 = 5_349_221
-        \\int7 = 53_49_221  # Indian number system grouping
-        \\int8 = 1_2_3_4_5  # VALID but discouraged
-        \\# hexadecimal with prefix `0x`
-        \\hex1 = 0xDEADBEEF
-        \\hex2 = 0xdeadbeef
-        \\hex3 = 0xdead_beef
-        \\# octal with prefix `0o`
-        \\oct1 = 0o01234567
-        \\oct2 = 0o755 # useful for Unix file permissions
-        \\# binary with prefix `0b`
-        \\bin1 = 0b11010110
-    ;
-    var ss = io.StreamSource{
-        .const_buffer = io.FixedBufferStream([]const u8){
-            .buffer = src,
-            .pos = 0,
-        },
-    };
-
-    var p = try Parser.init(testing.allocator, &ss);
-    defer p.deinit();
-
-    try p.parseDebug();
-}
-
-test "lex float" {
-    const testing = std.testing;
-    const src =
-        \\# fractional
-        \\flt1 = +1.0
-        \\flt2 = 3.1415
-        \\flt3 = -0.01
-        \\# exponent
-        \\flt4 = 5e+22
-        \\flt5 = 1e06
-        \\flt6 = -2E-2
-        \\# both
-        \\flt7 = 6.626e-34
-        \\# infinity
-        \\sf1 = inf  # positive infinity
-        \\sf2 = +inf # positive infinity
-        \\sf3 = -inf # negative infinity
-        \\# not a number
-        \\sf4 = nan  # actual sNaN/qNaN encoding is implementation-specific
-        \\sf5 = +nan # same as `nan`
-        \\sf6 = -nan # valid, actual encoding is implementation-specific
-    ;
-    var ss = io.StreamSource{
-        .const_buffer = io.FixedBufferStream([]const u8){
-            .buffer = src,
-            .pos = 0,
-        },
-    };
-
-    var p = try Parser.init(testing.allocator, &ss);
-    defer p.deinit();
-
-    try p.parseDebug();
-}
-
-test "lex bool" {
-    const testing = std.testing;
-    const src =
-        \\bool1 = true
-        \\bool2 = false
-    ;
-    var ss = io.StreamSource{
-        .const_buffer = io.FixedBufferStream([]const u8){
-            .buffer = src,
-            .pos = 0,
-        },
-    };
-
-    var p = try Parser.init(testing.allocator, &ss);
-    defer p.deinit();
-
-    try p.parseDebug();
-}
-
-test "lex datetime" {
-    const testing = std.testing;
-    const src =
-        \\odt1 = 1979-05-27T07:32:00Z
-        \\odt2 = 1979-05-27T00:32:00-07:00
-        \\odt3 = 1979-05-27T00:32:00.999999-07:00
-    ;
-    var ss = io.StreamSource{
-        .const_buffer = io.FixedBufferStream([]const u8){
-            .buffer = src,
-            .pos = 0,
-        },
-    };
-
-    var p = try Parser.init(testing.allocator, &ss);
-    defer p.deinit();
-
-    try p.parseDebug();
-}
-
-test "lex array" {
-    const testing = std.testing;
-    const src =
-        \\integers = [ 1, 2, 3 ]
-        \\colors = [ "red", "yellow", "green" ]
-        \\nested_arrays_of_ints = [ [ 1, 2 ], [3, 4, 5] ]
-        \\nested_mixed_array = [ [ 1, 2 ], ["a", "b", "c"] ]
-        \\string_array = [ "all", 'strings', """are the same""", '''type''' ]
-        \\
-        \\# Mixed-type arrays are allowed
-        \\numbers = [ 0.1, 0.2, 0.5, 1, 2, 5 ]
-        \\contributors = [
-        \\  "Foo Bar <foo@example.com>",
-        \\  { name = "Baz Qux", email = "bazqux@example.com", url = "https://example.com/bazqux" }
-        \\]
-        \\
-    ;
-    var ss = io.StreamSource{
-        .const_buffer = io.FixedBufferStream([]const u8){
-            .buffer = src,
-            .pos = 0,
-        },
-    };
-
-    var p = try Parser.init(testing.allocator, &ss);
-    defer p.deinit();
-
-    try p.parseDebug();
-}
-
-test "lex inline table" {
-    const testing = std.testing;
-    const src =
-        \\name = { first = "Tom", last = "Preston-Werner" }
-        \\point = { x = 1, y = 2 }
-        \\animal = { type.name = "pug" }
-    ;
-    var ss = io.StreamSource{
-        .const_buffer = io.FixedBufferStream([]const u8){
-            .buffer = src,
-            .pos = 0,
-        },
-    };
-
-    var p = try Parser.init(testing.allocator, &ss);
-    defer p.deinit();
-
-    try p.parseDebug();
-}
-
-test "lex table" {
-    const testing = std.testing;
-    const src =
-        \\[table-1]
-        \\key1 = "some string"
-        \\key2 = 123
-        \\
-        \\[table-2]
-        \\key1 = "another string"
-        \\key2 = 456
-        \\[dog."tater.man"]
-        \\type.name = "pug"
-        \\[a.b.c]            # this is best practice
-        \\[ d.e.f ]          # same as [d.e.f]
-        \\[ g .  h  . i ]    # same as [g.h.i]
-        \\[ j . "ʞ" . 'l' ]  # same as [j."ʞ".'l']
-    ;
-    var ss = io.StreamSource{
-        .const_buffer = io.FixedBufferStream([]const u8){
-            .buffer = src,
-            .pos = 0,
-        },
-    };
-
-    var p = try Parser.init(testing.allocator, &ss);
-    defer p.deinit();
-
-    try p.parseDebug();
-}
-
-test "lex array of tables" {
-    const testing = std.testing;
-    const src =
-        \\[[fruits]]
-        \\name = "apple"
-        \\
-        \\[fruits.physical]  # subtable
-        \\color = "red"
-        \\shape = "round"
-        \\
-        \\[[fruits.varieties]]  # nested array of tables
-        \\name = "red delicious"
-        \\
-        \\[[fruits.varieties]]
-        \\name = "granny smith"
-        \\
-        \\
-        \\[[fruits]]
-        \\name = "banana"
-        \\
-        \\[[fruits.varieties]]
-        \\name = "plantain"
-    ;
-    var ss = io.StreamSource{
-        .const_buffer = io.FixedBufferStream([]const u8){
-            .buffer = src,
-            .pos = 0,
-        },
-    };
-
-    var p = try Parser.init(testing.allocator, &ss);
-    defer p.deinit();
-
-    try p.parseDebug();
-}

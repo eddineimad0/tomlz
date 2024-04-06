@@ -6,7 +6,8 @@ const unicode = std.unicode;
 const fmt = std.fmt;
 const math = std.math;
 
-pub const Allocator = std.mem.Allocator;
+const Allocator = std.mem.Allocator;
+
 pub const String8 = std.ArrayList(u8);
 
 /// Wrapper over std.ArrayList, makes it easy to expand the size.
@@ -154,7 +155,7 @@ pub inline fn isWhiteSpace(codepoint: u21) bool {
 }
 
 pub inline fn isNewLine(codepoint: u21) bool {
-    return (codepoint == '\n' or codepoint == '\r');
+    return (codepoint == '\n');
 }
 
 pub inline fn isBareKeyChar(codepoint: u21) bool {
@@ -244,5 +245,3 @@ pub fn parseNanoSeconds(src: []const u8, ns: *u32) usize {
     }
     return src.len;
 }
-
-pub const isValidUTF8 = unicode.utf8ValidateSlice;
