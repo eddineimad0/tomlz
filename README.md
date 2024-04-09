@@ -6,7 +6,7 @@ A TOML parser written in zig that targets v1.0 specs of TOML.
 ## Test suite coverage
 [toml-test](https://github.com/toml-lang/toml-test) is a language-agnostic test suite to verify the correctness of TOML parsers and writers.
 
-Currently only 2 tests(invalid set) are failing and 413 are passing.
+Currently for the parser only 2 tests(invalid set) are failing and 413 are passing.
 
 ## Usage
 ```zig
