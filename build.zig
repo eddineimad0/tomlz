@@ -3,13 +3,14 @@ const std = @import("std");
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const build_options = prepareBuildOptions(b);
 
     var tomlz = b.createModule(.{
         .source_file = .{ .path = "src/main.zig" },
         .dependencies = &.{
             .{
                 .name = "build_options",
-                .module = prepareBuildOptions(b),
+                .module = build_options,
             },
         },
     });
@@ -53,6 +54,16 @@ pub fn build(b: *std.Build) !void {
     test_parser_bin.addModule("tomlz", tomlz);
     const test_install_step = b.addInstallArtifact(test_parser_bin, .{});
     test_parser_step.dependOn(&test_install_step.step);
+
+    const utest_step = b.step("test", "Run unit tests");
+    const utest = b.addTest(.{
+        .root_source_file = .{ .path = "src/main.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    utest.addModule("build_options", build_options);
+    const run_utest = b.addRunArtifact(utest);
+    utest_step.dependOn(&run_utest.step);
 }
 
 fn prepareBuildOptions(b: *std.Build) *std.Build.Module {
@@ -94,6 +105,12 @@ fn prepareBuildOptions(b: *std.Build) *std.Build.Module {
         "Specify the size of toml tables when parsing.",
     ) orelse 32;
 
+    const error_stack_buffer_size = b.option(
+        usize,
+        "toml_error_stack_buffer_size",
+        "Specify the size of toml tables when parsing.",
+    ) orelse 256;
+
     const options = b.addOptions();
     options.addOption(u8, "MAX_NESTTING_LEVEL", max_nestting_allowed);
     options.addOption(bool, "LOG_LEXER_STATE", lexer_log_state);
@@ -101,6 +118,7 @@ fn prepareBuildOptions(b: *std.Build) *std.Build.Module {
     options.addOption(usize, "LEXER_BUFFER_SIZE", lexer_buffer_size);
     options.addOption(usize, "DEFAULT_ARRAY_SIZE", default_array_size);
     options.addOption(usize, "DEFAULT_HASHMAP_SIZE", default_hashmap_size);
+    options.addOption(usize, "ERROR_STACK_BUFFER_SIZE", error_stack_buffer_size);
 
     const options_module = options.createModule();
     return options_module;
