@@ -3,13 +3,14 @@ const std = @import("std");
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const build_options = prepareBuildOptions(b);
 
     var tomlz = b.createModule(.{
         .source_file = .{ .path = "src/main.zig" },
         .dependencies = &.{
             .{
                 .name = "build_options",
-                .module = prepareBuildOptions(b),
+                .module = build_options,
             },
         },
     });
@@ -30,10 +31,10 @@ pub fn build(b: *std.Build) !void {
     );
     lib_fuzz_step.dependOn(&fuzz_lib_install.step);
 
-    const run_step = b.step("run", "Compile and run examples");
+    const examples_step = b.step("parse-examples", "Compile and parse toml examples");
     const binary = b.addExecutable(.{
-        .name = "examples",
-        .root_source_file = .{ .path = "tests/examples.zig" },
+        .name = "parse-examples",
+        .root_source_file = .{ .path = "steps/parse-examples.zig" },
         .target = target,
         .optimize = optimize,
     });
@@ -41,18 +42,28 @@ pub fn build(b: *std.Build) !void {
     const examples_install_step = b.addInstallArtifact(binary, .{});
     const examples_run_step = b.addRunArtifact(binary);
     examples_run_step.step.dependOn(&examples_install_step.step);
-    run_step.dependOn(&examples_run_step.step);
+    examples_step.dependOn(&examples_run_step.step);
 
-    const test_step = b.step("test", "Compile a binary to run against the toml test suite");
-    const curr_test = b.addExecutable(.{
+    const test_parser_step = b.step("test-parser", "Compile a binary to run against the toml test suite");
+    const test_parser_bin = b.addExecutable(.{
         .name = "test-parser",
-        .root_source_file = .{ .path = "tests/test-parser.zig" },
+        .root_source_file = .{ .path = "steps/test-parser.zig" },
         .target = target,
         .optimize = optimize,
     });
-    curr_test.addModule("tomlz", tomlz);
-    const test_install_step = b.addInstallArtifact(curr_test, .{});
-    test_step.dependOn(&test_install_step.step);
+    test_parser_bin.addModule("tomlz", tomlz);
+    const test_install_step = b.addInstallArtifact(test_parser_bin, .{});
+    test_parser_step.dependOn(&test_install_step.step);
+
+    const utest_step = b.step("test", "Run unit tests");
+    const utest = b.addTest(.{
+        .root_source_file = .{ .path = "src/main.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    utest.addModule("build_options", build_options);
+    const run_utest = b.addRunArtifact(utest);
+    utest_step.dependOn(&run_utest.step);
 }
 
 fn prepareBuildOptions(b: *std.Build) *std.Build.Module {
@@ -64,7 +75,7 @@ fn prepareBuildOptions(b: *std.Build) *std.Build.Module {
     ) orelse
         6;
 
-    const log_lexer_state = b.option(
+    const lexer_log_state = b.option(
         bool,
         "toml_lexer_log_state",
         "Log the lexer functions stack.",
@@ -94,13 +105,20 @@ fn prepareBuildOptions(b: *std.Build) *std.Build.Module {
         "Specify the size of toml tables when parsing.",
     ) orelse 32;
 
+    const error_stack_buffer_size = b.option(
+        usize,
+        "toml_error_stack_buffer_size",
+        "Specify the size of toml tables when parsing.",
+    ) orelse 256;
+
     const options = b.addOptions();
     options.addOption(u8, "MAX_NESTTING_LEVEL", max_nestting_allowed);
-    options.addOption(bool, "LOG_LEXER_STATE", log_lexer_state);
+    options.addOption(bool, "LOG_LEXER_STATE", lexer_log_state);
     options.addOption(bool, "EMIT_COMMENT_TOKEN", lexer_emit_comment);
     options.addOption(usize, "LEXER_BUFFER_SIZE", lexer_buffer_size);
     options.addOption(usize, "DEFAULT_ARRAY_SIZE", default_array_size);
     options.addOption(usize, "DEFAULT_HASHMAP_SIZE", default_hashmap_size);
+    options.addOption(usize, "ERROR_STACK_BUFFER_SIZE", error_stack_buffer_size);
 
     const options_module = options.createModule();
     return options_module;

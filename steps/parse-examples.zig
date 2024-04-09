@@ -6,12 +6,11 @@ var gpa_allocator = std.heap.GeneralPurposeAllocator(.{}){};
 
 fn parseTomlFile(f: fs.File) void {
     var ifs = io.StreamSource{ .file = f };
-    var p = toml.Parser.init(gpa_allocator.allocator(), &ifs) catch |e| {
-        std.debug.print("error={}", .{e});
-        return;
-    };
+    var p = toml.Parser.init(gpa_allocator.allocator());
     defer p.deinit();
-    var t = p.parse() catch {
+    var t = p.parse(&ifs) catch {
+        const msg = p.errorMessage();
+        std.log.err("{s}\n", .{msg});
         return;
     };
     printTable(t);
@@ -89,7 +88,10 @@ pub fn main() !void {
 
     const cwd = try std.os.getcwd(&path);
 
-    const target_path = if (target) |t| try fs.path.join(allocator, &.{ cwd, "examples", t }) else try fs.path.join(allocator, &.{ cwd, "examples" });
+    const target_path = if (target) |t|
+        try fs.path.join(allocator, &.{ cwd, "examples", t })
+    else
+        try fs.path.join(allocator, &.{ cwd, "examples" });
 
     defer allocator.free(target_path);
 
@@ -102,6 +104,14 @@ pub fn main() !void {
     while (try walker.next()) |*entry| {
         switch (entry.kind) {
             .file => {
+                // first look for files with .toml extension
+                const pos = std.mem.indexOf(u8, entry.path, ".");
+                if (pos == null) {
+                    continue;
+                }
+                if (!std.mem.eql(u8, entry.path[pos.?..entry.path.len], ".toml")) {
+                    continue;
+                }
                 var example = try examples_dir.dir.openFile(entry.path, .{});
                 defer example.close();
                 std.debug.print("\n========= Testing file {s} ===========\n", .{entry.path});

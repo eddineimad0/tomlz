@@ -4,8 +4,10 @@ const std = @import("std");
 const ascii = std.ascii;
 const unicode = std.unicode;
 const fmt = std.fmt;
+const math = std.math;
+const io = std.io;
 
-pub const Allocator = std.mem.Allocator;
+const Allocator = std.mem.Allocator;
 pub const String8 = std.ArrayList(u8);
 
 /// Wrapper over std.ArrayList, makes it easy to expand the size.
@@ -14,12 +16,14 @@ pub fn DynArray(comptime T: type) type {
     return struct {
         const Implementation = std.ArrayList(T);
         impl: Implementation,
+        initial_capacity: usize,
 
         const Self = @This();
 
         pub fn initCapacity(allocator: Allocator, initial_capacity: usize) Allocator.Error!Self {
             return .{
-                .impl = try Implementation.initCapacity(allocator, initial_capacity),
+                .impl = try Implementation.initCapacity(allocator, initial_capacity | 1),
+                .initial_capacity = initial_capacity,
             };
         }
 
@@ -27,13 +31,17 @@ pub fn DynArray(comptime T: type) type {
             return self.impl.items.len == self.impl.capacity;
         }
 
-        fn doubleCapacity(self: *Self) Allocator.Error!void {
-            try self.resize(self.impl.capacity *| 2);
+        fn growCapacity(self: *Self, required: usize) Allocator.Error!void {
+            var growth = self.impl.capacity + math.pow(usize, 2, self.initial_capacity);
+            if (growth < required) {
+                growth = required;
+            }
+            try self.resize(growth);
         }
 
         pub fn append(self: *Self, item: T) Allocator.Error!void {
             if (self.isFull() and self.size() != 0) {
-                try self.doubleCapacity();
+                try self.growCapacity(1);
             }
             self.impl.append(item) catch unreachable;
         }
@@ -44,7 +52,7 @@ pub fn DynArray(comptime T: type) type {
 
         pub fn appendSlice(self: *Self, slice: []const T) Allocator.Error!void {
             if (self.isFull() or (self.impl.items.len +| slice.len > self.impl.capacity)) {
-                try self.doubleCapacity();
+                try self.growCapacity(slice.len);
             }
             self.impl.appendSlice(slice) catch unreachable;
         }
@@ -110,37 +118,51 @@ pub const Position = struct {
     }
 };
 
-pub inline fn isControl(byte: u8) bool {
-    return switch (byte) {
+pub inline fn isControl(codepoint: u21) bool {
+    return switch (codepoint) {
         '\t', '\n' => false, // exceptions in toml.
-        else => ascii.isControl(byte),
+        else => codepoint <= 0x1f or codepoint == 0x7f,
     };
 }
 
-pub const isHex = ascii.isHex;
-pub const isDigit = ascii.isDigit;
-
-pub inline fn isBinary(byte: u8) bool {
-    return (byte == '0' or byte == '1');
+pub inline fn isDigit(codpoint: u21) bool {
+    return switch (codpoint) {
+        '0'...'9' => true,
+        else => false,
+    };
 }
 
-pub inline fn isOctal(byte: u8) bool {
-    return switch (byte) {
+pub inline fn isHex(codepoint: u21) bool {
+    return switch (codepoint) {
+        '0'...'9', 'A'...'F', 'a'...'f' => true,
+        else => false,
+    };
+}
+
+pub inline fn isBinary(codepoint: u21) bool {
+    return (codepoint == '0' or codepoint == '1');
+}
+
+pub inline fn isOctal(codepoint: u21) bool {
+    return switch (codepoint) {
         '0'...'7' => true,
         else => false,
     };
 }
 
-pub inline fn isWhiteSpace(byte: u8) bool {
-    return (byte == ' ' or byte == '\t');
+pub inline fn isWhiteSpace(codepoint: u21) bool {
+    return (codepoint == ' ' or codepoint == '\t');
 }
 
-pub inline fn isNewLine(byte: u8) bool {
-    return (byte == '\n' or byte == '\r');
+pub inline fn isNewLine(codepoint: u21) bool {
+    return (codepoint == '\n');
 }
 
-pub inline fn isBareKeyChar(c: u8) bool {
-    return (ascii.isAlphanumeric(c) or c == '-' or c == '_');
+pub inline fn isBareKeyChar(codepoint: u21) bool {
+    return switch (codepoint) {
+        '0'...'9', 'A'...'Z', 'a'...'z' => true,
+        else => codepoint == '-' or codepoint == '_',
+    };
 }
 
 /// parses a the unicode codepoint in bytes, encodes it and store
@@ -224,4 +246,43 @@ pub fn parseNanoSeconds(src: []const u8, ns: *u32) usize {
     return src.len;
 }
 
-pub const isValidUTF8 = unicode.utf8ValidateSlice;
+pub fn skipUTF8BOM(in: *io.StreamSource) void {
+    // INFO:
+    // The UTF-8 BOM is a sequence of bytes at the start of a text stream
+    // (0xEF, 0xBB, 0xBF) that allows the reader to more reliably guess
+    // a file as being encoded in UTF-8.
+    // [src:https://stackoverflow.com/questions/2223882/whats-the-difference-between-utf-8-and-utf-8-with-bom]
+    //
+    const UTF8BOMLE: u24 = 0xBFBBEF;
+
+    const r = in.reader();
+    const header = r.readIntLittle(u24) catch {
+        // the stream has less than 3 bytes.
+        // for now go back and let the lexer throw the errors
+        in.seekTo(0) catch unreachable;
+        return;
+    };
+
+    if (header != UTF8BOMLE) {
+        in.seekTo(0) catch unreachable;
+    }
+}
+
+pub fn skipUTF16BOM(in: *io.StreamSource) void {
+    // INFO:
+    // In UTF-16, a BOM (U+FEFF) may be placed as the first bytes
+    // of a file or character stream to indicate the endianness (byte order)
+    const UTF16BOMLE: u24 = 0xFFFE;
+
+    const r = in.reader();
+    const header = r.readIntLittle(u16) catch {
+        // the stream has less than 2 bytes.
+        // for now go back and let the lexer throw the errors
+        in.seekTo(0) catch unreachable;
+        return;
+    };
+
+    if (header != UTF16BOMLE) {
+        in.seekTo(0) catch unreachable;
+    }
+}

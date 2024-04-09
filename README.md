@@ -6,7 +6,7 @@ A TOML parser written in zig that targets v1.0 specs of TOML.
 ## Test suite coverage
 [toml-test](https://github.com/toml-lang/toml-test) is a language-agnostic test suite to verify the correctness of TOML parsers and writers.
 
-Currently only 2 tests are failling and 413 are passing.
+Currently only 2 tests(invalid set) are failing and 413 are passing.
 
 ## Usage
 ```zig
@@ -18,22 +18,26 @@ pub fn main() !void {
     defer std.debug.assert(gpa_allocator.deinit() == .ok);
     const allocator = gpa_allocator.allocator();
 
-    const toml_input = // a TOML file or a buffer or whatever TOML input
-
-    // the TOML parser accepts a io.StreamSource as an input source.
-    // the StreamSource should live as long as the parser.
-    var toml_stream = io.StreamSource{ .file = toml_input };
-
     // the toml parser takes an allocator and uses it internally for all allocations.
-    var p = toml.Parser.init(gpa_allocator.allocator(),&toml_stream) catch |err| {
-        std.log.err("Parser init error, {}\n",.{err});
-        // Handle error.
-    };
+    var p = toml.Parser.init(gpa_allocator.allocator());
     // when done deinit the parser to free all allocated resources.
     defer p.deinit();
 
+
+    const toml_input =
+        \\message = "Hello, World!"
+    ;
+    // the TOML parser accepts a io.StreamSource as an input source.
+    // the StreamSource should live as long as the parser.
+    var toml_stream = io.StreamSource{
+        .const_buffer = io.FixedBufferStream([]const u8){
+            .buffer = src,
+            .pos = 0,
+        },
+    };
+
     // use parse to start parsing the input source.
-    var parsed = p.parse() catch {
+    var parsed = p.parse(&toml_stream) catch {
         std.log.err("The stream isn't a valid TOML document, {}\n",.{err});
         // handle error.
     };
@@ -53,8 +57,8 @@ pub fn main() !void {
     // };
     // aside from DateTime all other types are standard zig types.
     // all data returned by the parser is owned by the parser and 
-    // will be freed once deinit is called, consider cloning anything
-    // you need to outlive the parser.
+    // will be freed once deinit is called or if parse() is called again,
+    // consider cloning anything you need to outlive the parser.
 
 
     var iter = parsed.iterator();
