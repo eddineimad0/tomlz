@@ -5,9 +5,9 @@ const ascii = std.ascii;
 const unicode = std.unicode;
 const fmt = std.fmt;
 const math = std.math;
+const io = std.io;
 
 const Allocator = std.mem.Allocator;
-
 pub const String8 = std.ArrayList(u8);
 
 /// Wrapper over std.ArrayList, makes it easy to expand the size.
@@ -244,4 +244,45 @@ pub fn parseNanoSeconds(src: []const u8, ns: *u32) usize {
         }
     }
     return src.len;
+}
+
+pub fn skipUTF8BOM(in: *io.StreamSource) void {
+    // INFO:
+    // The UTF-8 BOM is a sequence of bytes at the start of a text stream
+    // (0xEF, 0xBB, 0xBF) that allows the reader to more reliably guess
+    // a file as being encoded in UTF-8.
+    // [src:https://stackoverflow.com/questions/2223882/whats-the-difference-between-utf-8-and-utf-8-with-bom]
+    //
+    const UTF8BOMLE: u24 = 0xBFBBEF;
+
+    const r = in.reader();
+    const header = r.readIntLittle(u24) catch {
+        // the stream has less than 3 bytes.
+        // for now go back and let the lexer throw the errors
+        in.seekTo(0) catch unreachable;
+        return;
+    };
+
+    if (header != UTF8BOMLE) {
+        in.seekTo(0) catch unreachable;
+    }
+}
+
+pub fn skipUTF16BOM(in: *io.StreamSource) void {
+    // INFO:
+    // In UTF-16, a BOM (U+FEFF) may be placed as the first bytes
+    // of a file or character stream to indicate the endianness (byte order)
+    const UTF16BOMLE: u24 = 0xFFFE;
+
+    const r = in.reader();
+    const header = r.readIntLittle(u16) catch {
+        // the stream has less than 2 bytes.
+        // for now go back and let the lexer throw the errors
+        in.seekTo(0) catch unreachable;
+        return;
+    };
+
+    if (header != UTF16BOMLE) {
+        in.seekTo(0) catch unreachable;
+    }
 }

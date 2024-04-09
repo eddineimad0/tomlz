@@ -9,52 +9,11 @@ const mem = std.mem;
 const heap = std.heap;
 const io = std.io;
 const debug = std.debug;
-const log = std.log;
 
 const StringHashmap = std.StringHashMap;
 const TomlValueArray = common.DynArray(dt.TomlValue);
 const TomlArrayStack = std.SegmentedList(TomlValueArray, 8);
-
-fn skipUTF8BOM(in: *io.StreamSource) void {
-    // INFO:
-    // The UTF-8 BOM is a sequence of bytes at the start of a text stream
-    // (0xEF, 0xBB, 0xBF) that allows the reader to more reliably guess
-    // a file as being encoded in UTF-8.
-    // [src:https://stackoverflow.com/questions/2223882/whats-the-difference-between-utf-8-and-utf-8-with-bom]
-    //
-    const UTF8BOMLE: u24 = 0xBFBBEF;
-
-    const r = in.reader();
-    const header = r.readIntLittle(u24) catch {
-        // the stream has less than 3 bytes.
-        // for now go back and let the lexer throw the errors
-        in.seekTo(0) catch unreachable;
-        return;
-    };
-
-    if (header != UTF8BOMLE) {
-        in.seekTo(0) catch unreachable;
-    }
-}
-
-fn skipUTF16BOM(in: *io.StreamSource) void {
-    // INFO:
-    // In UTF-16, a BOM (U+FEFF) may be placed as the first bytes
-    // of a file or character stream to indicate the endianness (byte order)
-    const UTF16BOMLE: u24 = 0xFFFE;
-
-    const r = in.reader();
-    const header = r.readIntLittle(u16) catch {
-        // the stream has less than 2 bytes.
-        // for now go back and let the lexer throw the errors
-        in.seekTo(0) catch unreachable;
-        return;
-    };
-
-    if (header != UTF16BOMLE) {
-        in.seekTo(0) catch unreachable;
-    }
-}
+const ParseError = @import("error.zig").ParseError;
 
 pub const Parser = struct {
     const ParserContext = enum(u1) {
@@ -70,7 +29,7 @@ pub const Parser = struct {
 
     const ParserStateStack = std.SegmentedList(ParserState, 8);
 
-    const DEBUG_KEY = "DEBUG";
+    const DEBUG_KEY = "__TOML_DEBUG";
 
     const Error = error{
         LexerError,
@@ -95,23 +54,22 @@ pub const Parser = struct {
     state_stack: ParserStateStack,
     array_stack: TomlArrayStack, // keeps track of nested arrays.
     state: ParserState,
+    err: ParseError,
     root: dt.TomlTable,
 
-    /// initialize a toml parser, the toml_input pointer should remain valid
-    /// until the parser is deinitialized.
+    /// initialize a toml parser.
     /// call deinit() when done to release memory resources.
-    pub fn init(
-        allocator: mem.Allocator,
-    ) Self {
+    pub fn init(allocator: mem.Allocator) Self {
         return .{
             .implicit_map = StringHashmap(void).init(allocator),
             .inline_map = StringHashmap(void).init(allocator),
-            .base_allocator = allocator,
-            .arena = heap.ArenaAllocator.init(allocator),
             .array_stack = TomlArrayStack{},
             .state_stack = ParserStateStack{},
-            .state = undefined,
+            .base_allocator = allocator,
+            .arena = heap.ArenaAllocator.init(allocator),
             .root = dt.TomlTable.init(allocator),
+            .state = undefined,
+            .err = ParseError.init(allocator),
         };
     }
 
@@ -124,32 +82,15 @@ pub const Parser = struct {
         self.state_stack.deinit(self.base_allocator);
         self.arena.deinit();
         self.root.deinit();
+        self.err.deinit();
     }
 
-    fn pushState(
+    pub fn parse(
         self: *Self,
-        new_context: ParserContext,
-        new_put_target: *anyopaque,
-    ) mem.Allocator.Error!void {
-        try self.state_stack.append(self.base_allocator, self.state);
-        self.state = .{
-            .context = new_context,
-            .target = new_put_target,
-            .key = DEBUG_KEY, // default value for debuging
-        };
-    }
-
-    fn popState(self: *Self) void {
-        self.state = self.state_stack.pop() orelse .{
-            .context = .Table,
-            .target = &self.root,
-            .key = DEBUG_KEY,
-        };
-    }
-
-    pub fn parse(self: *Self, toml_input: *io.StreamSource) (mem.Allocator.Error || Parser.Error)!*const dt.TomlTable {
+        toml_input: *io.StreamSource,
+    ) (mem.Allocator.Error || Parser.Error)!*const dt.TomlTable {
         _ = self.arena.reset(.{ .free_all = {} });
-        self.root.clearAndFree();
+        self.root.clearRetainingCapacity();
 
         try self.root.ensureTotalCapacity(opt.DEFAULT_HASHMAP_SIZE);
         try self.implicit_map.ensureTotalCapacity(16);
@@ -163,19 +104,19 @@ pub const Parser = struct {
 
         self.state = .{ .context = .Table, .target = &self.root, .key = DEBUG_KEY };
 
-        skipUTF16BOM(toml_input);
-        skipUTF8BOM(toml_input);
+        common.skipUTF16BOM(toml_input);
+        common.skipUTF8BOM(toml_input);
         var lexer = try lex.Lexer.init(self.base_allocator, toml_input);
         defer lexer.deinit();
+
         var token: lex.Token = undefined;
         while (true) {
             lexer.nextToken(&token);
             switch (token.tag) {
                 .EndOfStream => break,
                 .Error => {
-                    // TODO: make error message reporting opt-in by the caller.
-                    log.err(
-                        "[line:{d},col:{d}], {s}\n",
+                    self.err.writeErrorMsg(
+                        "[line:{d},col:{d}] {s}",
                         .{ token.start.line, token.start.column, token.value.? },
                     );
                     return Error.LexerError;
@@ -236,7 +177,7 @@ pub const Parser = struct {
                 },
                 else => {
                     var value: dt.TomlValue = undefined;
-                    try parseValue(self.arena.allocator(), &token, &value);
+                    try self.parseValue(self.arena.allocator(), &token, &value);
                     _ = try self.putValue(&value, &key_path);
                 },
             }
@@ -250,7 +191,37 @@ pub const Parser = struct {
         return &self.root;
     }
 
+    /// Returns a string slice containing a detailed message about
+    /// the last error encountered by the parser.
+    /// the slice memory is managed by the parser and might get overwritten
+    /// on subsequent calls to 'parse()'.
+    pub inline fn errorMessage(self: *const Self) []const u8 {
+        return self.err.errorMessage();
+    }
+
+    fn pushState(
+        self: *Self,
+        new_context: ParserContext,
+        new_put_target: *anyopaque,
+    ) mem.Allocator.Error!void {
+        try self.state_stack.append(self.base_allocator, self.state);
+        self.state = .{
+            .context = new_context,
+            .target = new_put_target,
+            .key = DEBUG_KEY,
+        };
+    }
+
+    fn popState(self: *Self) void {
+        self.state = self.state_stack.pop() orelse .{
+            .context = .Table,
+            .target = &self.root,
+            .key = DEBUG_KEY,
+        };
+    }
+
     fn parseValue(
+        self: *Self,
         allocator: mem.Allocator,
         t: *const lex.Token,
         v: *dt.TomlValue,
@@ -258,11 +229,17 @@ pub const Parser = struct {
         switch (t.tag) {
             .Integer => {
                 if (!isValidNumber(t.value.?)) {
-                    log.err("Parser: '{s}' isn't a valid number", .{t.value.?});
+                    self.err.writeErrorMsg(
+                        "[line:{d},col:{d}] (Parser): '{s}' isn't a valid integer",
+                        .{ t.start.line, t.start.column, t.value.? },
+                    );
                     return Error.InvalidInteger;
                 }
-                const integer = fmt.parseInt(isize, t.value.?, 0) catch |e| {
-                    log.err("Parser: couldn't convert to integer, input={s}, error={}\n", .{ t.value.?, e });
+                const integer = fmt.parseInt(isize, t.value.?, 0) catch {
+                    self.err.writeErrorMsg(
+                        "[line:{d},col:{d}] (Parser): couldn't parse string {s} to integer",
+                        .{ t.start.line, t.start.column, t.value.? },
+                    );
                     return Error.InvalidInteger;
                 };
                 v.* = dt.TomlValue{ .Integer = integer };
@@ -274,13 +251,16 @@ pub const Parser = struct {
             },
             .Float => {
                 if (!isValidFloat(t.value.?)) {
-                    log.err("Parser: invalid float {s}", .{t.value.?});
+                    self.err.writeErrorMsg(
+                        "[line:{d},col:{d}] (Parser): '{s}' isn't a valid float",
+                        .{ t.start.line, t.start.column, t.value.? },
+                    );
                     return Error.InvalidFloat;
                 }
-                const float = fmt.parseFloat(f64, t.value.?) catch |e| {
-                    log.err(
-                        "Parser: couldn't convert to float, input={s}, error={}\n",
-                        .{ t.value.?, e },
+                const float = fmt.parseFloat(f64, t.value.?) catch {
+                    self.err.writeErrorMsg(
+                        "[line:{d},col:{d}] (Parser): couldn't parse string {s} to float",
+                        .{ t.start.line, t.start.column, t.value.? },
                     );
                     return Error.InvalidFloat;
                 };
@@ -311,33 +291,38 @@ pub const Parser = struct {
             },
             .DateTime => {
                 var date_time: dt.DateTime = undefined;
-                try parseDateTime(t.value.?, &date_time);
+                try self.parseDateTime(t, &date_time);
                 v.* = dt.TomlValue{ .DateTime = date_time };
             },
             else => unreachable,
         }
     }
 
-    fn parseDateTime(src: []const u8, output: *dt.DateTime) Error!void {
+    fn parseDateTime(
+        self: *Self,
+        token: *const lex.Token,
+        output: *dt.DateTime,
+    ) Error!void {
+        const src = token.value.?;
         var input = src;
-        var expect_date: bool = false;
+        var expect_time: bool = false;
         output.date = parseDate(input);
         if (output.date) |date| {
             if (!common.isDateValid(date.year, date.month, date.day)) {
-                log.err(
-                    "Parser: {d}-{d}-{d} is not a valid date",
-                    .{ date.year, date.month, date.day },
+                self.err.writeErrorMsg(
+                    "[line:{d},col:{d}] (Parser): {d}-{d}-{d} is not a valid date",
+                    .{ token.start.line, token.start.column, date.year, date.month, date.day },
                 );
                 return Error.InvalidDate;
             }
             if (src.len > 10) {
                 if (src[10] == 'T' and src.len > 11) {
                     input = src[11..src.len];
-                    expect_date = true;
+                    expect_time = true;
                 } else {
-                    log.err(
-                        "Parser: \"{s}\" time should be separated from date with a valid separator",
-                        .{input},
+                    self.err.writeErrorMsg(
+                        "[line:{d},col:{d}] (Parser): \"{s}\" time should be separated from date",
+                        .{ token.start.line, token.start.column, input },
                     );
                     return Error.BadDateTimeFormat;
                 }
@@ -350,14 +335,18 @@ pub const Parser = struct {
         output.time = parseTime(input);
         if (output.time) |t| {
             if (!common.isTimeValid(t.hour, t.minute, t.second)) {
-                log.err(
-                    "Parser: {d}:{d}:{d}.{d} is not a valid time",
-                    .{ t.hour, t.minute, t.second, t.nano_second },
+                self.err.writeErrorMsg(
+                    "[line:{d},col:{d}] (Parser): {d}:{d}:{d}.{d} is not a valid time",
+                    .{ token.start.line, token.start.column, t.hour, t.minute, t.second, t.nano_second },
                 );
                 return Error.InvalidTime;
             }
         } else {
-            if (output.date == null or expect_date) {
+            if (output.date == null or expect_time) {
+                self.err.writeErrorMsg(
+                    "[line:{d},col:{d}] (Parser): {s} is not a valid date-time",
+                    .{ token.start.line, token.start.column, src },
+                );
                 return Error.BadDateTimeFormat;
             }
         }
@@ -455,13 +444,16 @@ pub const Parser = struct {
                         if (self.inline_map.contains(table_name)) {
                             // toml tried to add a property to an already
                             // defined inline table.
-                            log.err("Parser: inline table '{s}' can't be updated after declaration.", .{table_name});
+                            self.err.writeErrorMsg(
+                                "(Parser): inline table '{s}' can't be updated after declaration.",
+                                .{table_name},
+                            );
                             return Error.InlineTableUpdate;
                         }
                         temp = t;
                     },
                     else => {
-                        log.err("Parser: key {s} is not a table", .{table_name});
+                        self.err.writeErrorMsg("(Parser): key {s} is not a table", .{table_name});
                         return Error.DuplicateKey;
                     },
                 }
@@ -489,8 +481,8 @@ pub const Parser = struct {
                 switch (value.*) {
                     .Table => |*t| {
                         if (self.inline_map.get(table_name)) |_| {
-                            log.err(
-                                "Parser: inline table '{s}' can't be updated after declaration.",
+                            self.err.writeErrorMsg(
+                                "(Parser): inline table '{s}' can't be updated after declaration.",
                                 .{table_name},
                             );
                             return Error.InlineTableUpdate;
@@ -502,8 +494,8 @@ pub const Parser = struct {
                         temp = &ta[ta.len - 1];
                     },
                     else => {
-                        log.err(
-                            "Parser: key {s} is neither a table nor an arrays of tables",
+                        self.err.writeErrorMsg(
+                            "(Parser): key {s} is neither a table nor an arrays of tables",
                             .{table_name},
                         );
                         return Error.DuplicateKey;
@@ -537,7 +529,7 @@ pub const Parser = struct {
                 const dest_table = try self.walkKeyPath(tbl, key_path.data());
                 key_path.clearContent();
                 if (dest_table.contains(key)) {
-                    log.err("Parser: redefinition of key '{s}'", .{key});
+                    self.err.writeErrorMsg("(Parser): redefinition of key '{s}'", .{key});
                     return Error.DuplicateKey;
                 }
                 try dest_table.put(key, value.*);
@@ -575,12 +567,18 @@ pub const Parser = struct {
                                 tv.Table.deinit();
                                 return table;
                             } else {
-                                log.err("Parser: redefinition of table '{s}'", .{key});
+                                self.err.writeErrorMsg(
+                                    "(Parser): redefinition of table '{s}'",
+                                    .{key},
+                                );
                                 return Error.DuplicateKey;
                             }
                         },
                         else => {
-                            log.err("Parser: redefinition of key '{s}'", .{key});
+                            self.err.writeErrorMsg(
+                                "(Parser): redefinition of key '{s}'",
+                                .{key},
+                            );
                             return Error.DuplicateKey;
                         },
                     }
@@ -630,8 +628,8 @@ pub const Parser = struct {
                     break :blk old_array;
                 },
                 else => {
-                    log.err(
-                        "Parser: attempt to redefine '{s}' as an array of tables.",
+                    self.err.writeErrorMsg(
+                        "(Parser): attempt to redefine '{s}' as an array of tables.",
                         .{self.state.key},
                     );
                     return Error.DuplicateKey;

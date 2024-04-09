@@ -13,7 +13,7 @@ const debug = std.debug;
 const Stack = std.ArrayList;
 
 // NOTE: for all strings and keys tokens the value won't contain
-// the delimiters (`'`, `"`...etc). for numbers such as integers and floats
+// the delimiters (`'`, `"`...etc), for numbers such as integers and floats
 // it only validates that they don't contain any non permissable characters,
 // the parser should make sure the values are valid for the type.
 pub const TokenTag = enum(i8) {
@@ -65,8 +65,8 @@ pub const Lexer = struct {
 
     const Self = @This();
     const LexFuncPtr = *const fn (self: *Self, t: *Token) void;
-    const ERR_MSG_GENERIC: []const u8 = "Lexer: Encounterd an error.";
-    const ERR_MSG_OUT_OF_MEMORY: []const u8 = "Lexer: Ran out of memory.";
+    const ERR_MSG_GENERIC: []const u8 = "(Lexer): Encounterd an error.";
+    const ERR_MSG_OUT_OF_MEMORY: []const u8 = "(Lexer): Ran out of memory.";
     const EMIT_FUNC: ?LexFuncPtr = null;
     const WHITESPACE = [2]u8{ ' ', '\t' };
     const NEWLINE = [2]u8{ '\n', '\r' };
@@ -112,7 +112,7 @@ pub const Lexer = struct {
         var cp = utf8.readUTF8Codepoint(reader, &len);
 
         if (cp == utf8.UTF8_ERROR) {
-            self.reportError("Lexer: found invalid utf8 codepoint", .{});
+            self.reportError("(Lexer): found invalid utf8 codepoint", .{});
             return error.InvalidCodepoint;
         }
 
@@ -123,7 +123,7 @@ pub const Lexer = struct {
             cp = utf8.readUTF8Codepoint(reader, &len);
             if (cp != '\n') {
                 self.reportError(
-                    "Lexer: carriage return should be followed by a newline character.",
+                    "(Lexer): carriage return should be followed by a newline character.",
                     .{},
                 );
                 return error.BadEOL;
@@ -214,7 +214,7 @@ pub const Lexer = struct {
             const b = self.nextByte() catch |err| {
                 if (err == error.BadEOL) {
                     self.reportError(
-                        "Lexer: Expected a newline after carriage return",
+                        "(Lexer): Expected a newline after carriage return",
                         .{},
                     );
                 }
@@ -247,7 +247,7 @@ pub const Lexer = struct {
 
         if (common.isControl(c.codepoint)) {
             self.reportError(
-                "Stream contains control character '0x{x:0>2}'",
+                "(Lexer): Stream contains control character '0x{x:0>2}'",
                 .{c.codepoint},
             );
             return;
@@ -289,7 +289,7 @@ pub const Lexer = struct {
 
             if (common.isControl(c.codepoint)) {
                 self.reportError(
-                    "Lexer: control character '{u}' not allowed in comments",
+                    "(Lexer): control character '{u}' not allowed in comments",
                     .{c.codepoint},
                 );
                 return;
@@ -318,12 +318,12 @@ pub const Lexer = struct {
         const b = self.nextByte() catch |err| {
             if (err == error.BadEOL) {
                 self.reportError(
-                    "Lexer: Expected a newline after carriage return",
+                    "(Lexer): Expected a newline after carriage return",
                     .{},
                 );
             } else {
                 self.reportError(
-                    "Lexer: expected closing bracket ']' before end of stream",
+                    "(Lexer): expected closing bracket ']' before end of stream",
                     .{},
                 );
             }
@@ -351,7 +351,7 @@ pub const Lexer = struct {
         const b = self.nextByte() catch |err| {
             if (err == error.BadEOL) {
                 self.reportError(
-                    "Lexer: Expected a newline after carriage return",
+                    "(Lexer): Expected a newline after carriage return",
                     .{},
                 );
             }
@@ -362,7 +362,7 @@ pub const Lexer = struct {
             '#' => self.pushStateOrThrow(lexComment),
             '\n' => {},
             else => self.reportError(
-                "Lexer: expected newline after table header",
+                "(Lexer): expected newline after table header",
                 .{},
             ),
         }
@@ -377,7 +377,7 @@ pub const Lexer = struct {
         switch (c.codepoint) {
             '.', ']' => {
                 self.reportError(
-                    "Lexer: unexpected symbol found within table name",
+                    "(Lexer): unexpected symbol found within table name",
                     .{},
                 );
                 return;
@@ -406,7 +406,7 @@ pub const Lexer = struct {
             },
             else => {
                 self.reportError(
-                    "Lexer: expected closing bracket ']' or comma '.' found `{u}`",
+                    "(Lexer): expected closing bracket ']' or comma '.' found `{u}`",
                     .{c.codepoint},
                 );
                 return;
@@ -421,7 +421,7 @@ pub const Lexer = struct {
     fn lexArrayTableEnd(self: *Self, t: *Token) void {
         if (!self.consumeByte(']')) {
             self.reportError(
-                "Lexer: expected `]` at the of Array of tables declaration",
+                "(Lexer): expected `]` at the of Array of tables declaration",
                 .{},
             );
             return;
@@ -437,7 +437,7 @@ pub const Lexer = struct {
         const b = self.nextByte() catch return;
         switch (b) {
             '=', '.' => self.reportError(
-                "Lexer: expected a key name found '{c}' ",
+                "(Lexer): expected a key name found '{c}' ",
                 .{b},
             ),
             '"', '\'' => self.lexQuottedKey(b),
@@ -454,7 +454,7 @@ pub const Lexer = struct {
 
         const b = self.nextByte() catch {
             self.reportError(
-                "Lexer: expected '=' after key name",
+                "(Lexer): expected '=' after key name",
                 .{},
             );
             return;
@@ -469,7 +469,7 @@ pub const Lexer = struct {
                 self.pushStateOrThrow(lexValue);
             },
             else => self.reportError(
-                "Lexer: expected '=' or '.' found '{c}'",
+                "(Lexer): expected '=' or '.' found '{c}'",
                 .{b},
             ),
         }
@@ -511,7 +511,7 @@ pub const Lexer = struct {
         self.skipBytes(&WHITESPACE);
         const b = self.nextByte() catch {
             self.reportError(
-                "Lexer: expected a value after '='",
+                "(Lexer): expected a value after '='",
                 .{},
             );
             return;
@@ -570,7 +570,7 @@ pub const Lexer = struct {
                 self.pushStateOrThrow(lexBoolean);
             },
             else => self.reportError(
-                "Lexer: expected a value after '=' found '{c}'",
+                "(Lexer): expected a value after '=' found '{c}'",
                 .{b},
             ),
         }
@@ -583,7 +583,7 @@ pub const Lexer = struct {
         const b = self.nextByte() catch |err| {
             if (err == error.BadEOL) {
                 self.reportError(
-                    "Lexer: Expected a newline after carriage return",
+                    "(Lexer): Expected a newline after carriage return",
                     .{},
                 );
             }
@@ -594,7 +594,7 @@ pub const Lexer = struct {
             '#' => self.pushStateOrThrow(lexComment),
             '\n' => return,
             else => self.reportError(
-                "Lexer: expected newline after key/value pair found '{c}'",
+                "(Lexer): expected newline after key/value pair found '{c}'",
                 .{b},
             ),
         }
@@ -610,7 +610,7 @@ pub const Lexer = struct {
 
                     if (common.isNewLine(c.codepoint)) {
                         self.reportError(
-                            "Lexer: basic string can't contain a newline character '0x{X:0>2}'",
+                            "(Lexer): basic string can't contain a newline character '0x{X:0>2}'",
                             .{c.codepoint},
                         );
                         return;
@@ -618,7 +618,7 @@ pub const Lexer = struct {
 
                     if (common.isControl(c.codepoint)) {
                         self.reportError(
-                            "Lexer: control character '{u}' not allowed in basic strings",
+                            "(Lexer): control character '{u}' not allowed in basic strings",
                             .{c.codepoint},
                         );
                         return;
@@ -627,7 +627,7 @@ pub const Lexer = struct {
                     switch (c.codepoint) {
                         utf8.EOS => {
                             self.reportError(
-                                "Lexer: expected a string delimiter '\"' before end of stream",
+                                "(Lexer): expected a string delimiter '\"' before end of stream",
                                 .{},
                             );
                             return;
@@ -651,14 +651,14 @@ pub const Lexer = struct {
 
                     if (common.isControl(c.codepoint)) {
                         self.reportError(
-                            "Lexer: control character '{u}' not allowed in litteral strings",
+                            "(Lexer): control character '{u}' not allowed in litteral strings",
                             .{c.codepoint},
                         );
                         return;
                     }
                     if (common.isNewLine(c.codepoint)) {
                         self.reportError(
-                            "Lexer: litteral string can't contain a newline character '0x{X:0>2}'",
+                            "(Lexer): litteral string can't contain a newline character '0x{X:0>2}'",
                             .{c.codepoint},
                         );
                         return;
@@ -666,7 +666,7 @@ pub const Lexer = struct {
                     switch (c.codepoint) {
                         utf8.EOS => {
                             self.reportError(
-                                "Lexer: expected a string delimiter `'` before end of stream",
+                                "(Lexer): expected a string delimiter `'` before end of stream",
                                 .{},
                             );
                             return;
@@ -690,7 +690,7 @@ pub const Lexer = struct {
 
             if (common.isControl(c.codepoint)) {
                 self.reportError(
-                    "Lexer: control character '{u}' not allowed in basic strings",
+                    "(Lexer): control character '{u}' not allowed in basic strings",
                     .{c.codepoint},
                 );
                 return;
@@ -698,7 +698,7 @@ pub const Lexer = struct {
             switch (c.codepoint) {
                 utf8.EOS => {
                     self.reportError(
-                        "Lexer: expected a string delimiter \"\"\" before end of stream",
+                        "(Lexer): expected a string delimiter \"\"\" before end of stream",
                         .{},
                     );
                     return;
@@ -749,7 +749,7 @@ pub const Lexer = struct {
 
             if (common.isControl(c.codepoint)) {
                 self.reportError(
-                    "Lexer: control character '{u}' not allowed in basic strings",
+                    "(Lexer): control character '{u}' not allowed in basic strings",
                     .{c.codepoint},
                 );
                 return;
@@ -757,7 +757,7 @@ pub const Lexer = struct {
             switch (c.codepoint) {
                 utf8.EOS => {
                     self.reportError(
-                        "Lexer: expected a string delimiter ''' before end of stream",
+                        "(Lexer): expected a string delimiter ''' before end of stream",
                         .{},
                     );
                     return;
@@ -805,7 +805,7 @@ pub const Lexer = struct {
     fn lexMultiLineStringEscape(self: *Self) !void {
         var b = self.nextByte() catch {
             self.reportError(
-                "Lexer: expected an escape sequence before end of stream",
+                "(Lexer): expected an escape sequence before end of stream",
                 .{},
             );
             return error.BadStringEscape;
@@ -816,7 +816,7 @@ pub const Lexer = struct {
             self.skipBytes(&WHITESPACE);
             b = self.nextByte() catch {
                 self.reportError(
-                    "Lexer: expected an escape sequence before end of stream",
+                    "(Lexer): expected an escape sequence before end of stream",
                     .{},
                 );
                 return error.BadStringEscape;
@@ -830,7 +830,7 @@ pub const Lexer = struct {
                 return;
             } else {
                 self.reportError(
-                    "Lexer: expected a newline after line ending backslash",
+                    "(Lexer): expected a newline after line ending backslash",
                     .{},
                 );
                 return error.BadStringEscape;
@@ -853,7 +853,7 @@ pub const Lexer = struct {
     fn lexStringEscape(self: *Self, is_multiline: bool) !void {
         const b = self.nextByte() catch {
             self.reportError(
-                "Lexer: expected an escape sequence before end of stream",
+                "(Lexer): expected an escape sequence before end of stream",
                 .{},
             );
             return error.BadStringEscape;
@@ -878,7 +878,7 @@ pub const Lexer = struct {
                 }
                 var num_written: usize = common.toUnicodeCodepoint(hex[0..4]) catch {
                     self.reportError(
-                        "Lexer: '\\u{s}' is not a valid unicode escape",
+                        "(Lexer): '\\u{s}' is not a valid unicode escape",
                         .{hex[0..4]},
                     );
                     return error.BasicStringEscape;
@@ -892,7 +892,7 @@ pub const Lexer = struct {
                 }
                 var num_written: usize = common.toUnicodeCodepoint(hex[0..8]) catch {
                     self.reportError(
-                        "Lexer: '\\U{s}' is not a valid unicode escape",
+                        "(Lexer): '\\U{s}' is not a valid unicode escape",
                         .{hex[0..8]},
                     );
                     return error.BasicStringEscape;
@@ -901,7 +901,7 @@ pub const Lexer = struct {
             },
             else => {
                 self.reportError(
-                    "Lexer: bad string escape sequence, '\\{c}' | \\0x{X:0>2}",
+                    "(Lexer): bad string escape sequence, '\\{c}' | \\0x{X:0>2}",
                     .{ b, b },
                 );
                 return error.BadStringEscape;
@@ -918,7 +918,7 @@ pub const Lexer = struct {
         for (0..width) |i| {
             const b = self.nextByte() catch {
                 self.reportError(
-                    "Lexer: expected hexadecimal digit",
+                    "(Lexer): expected hexadecimal digit",
                     .{},
                 );
                 return false;
@@ -926,7 +926,7 @@ pub const Lexer = struct {
 
             if (!common.isHex(b)) {
                 self.reportError(
-                    "Lexer: expected hexadecimal digit found {c}",
+                    "(Lexer): expected hexadecimal digit found {c}",
                     .{b},
                 );
                 return false;
@@ -987,7 +987,7 @@ pub const Lexer = struct {
             b = self.nextByte() catch |err| {
                 if (err == error.BadEOL) {
                     self.reportError(
-                        "Lexer: bad newline character.",
+                        "(Lexer): bad newline character.",
                         .{},
                     );
                     return;
@@ -1035,7 +1035,7 @@ pub const Lexer = struct {
             const b = self.nextByte() catch |err| {
                 if (err == error.BadEOL) {
                     self.reportError(
-                        "Lexer: bad newline character.",
+                        "(Lexer): bad newline character.",
                         .{},
                     );
                     return;
@@ -1062,7 +1062,7 @@ pub const Lexer = struct {
             const b = self.nextByte() catch |err| {
                 if (err == error.BadEOL) {
                     self.reportError(
-                        "Lexer: bad newline character.",
+                        "(Lexer): bad newline character.",
                         .{},
                     );
                     return;
@@ -1088,7 +1088,7 @@ pub const Lexer = struct {
             const b = self.nextByte() catch |err| {
                 if (err == error.BadEOL) {
                     self.reportError(
-                        "Lexer: bad newline character.",
+                        "(Lexer): bad newline character.",
                         .{},
                     );
                     return;
@@ -1134,7 +1134,7 @@ pub const Lexer = struct {
             const b = self.nextByte() catch |err| {
                 if (err == error.BadEOL) {
                     self.reportError(
-                        "Lexer: bad newline character.",
+                        "(Lexer): bad newline character.",
                         .{},
                     );
                     return;
@@ -1161,7 +1161,7 @@ pub const Lexer = struct {
             const b = self.nextByte() catch |err| {
                 if (err == error.BadEOL) {
                     self.reportError(
-                        "Lexer: bad newline character.",
+                        "(Lexer): bad newline character.",
                         .{},
                     );
                     return;
@@ -1187,7 +1187,7 @@ pub const Lexer = struct {
                 },
                 'i' => {
                     if (!self.consumeByte('n') or !self.consumeByte('f')) {
-                        self.reportError("Lexer: Invalid float", .{});
+                        self.reportError("(Lexer): Invalid float", .{});
                         return;
                     }
                     self.token_buffer.appendSlice(&[_]u8{ 'i', 'n', 'f' }) catch {
@@ -1198,7 +1198,7 @@ pub const Lexer = struct {
                 },
                 'n' => {
                     if (!self.consumeByte('a') or !self.consumeByte('n')) {
-                        self.reportError("Lexer: Invalid float", .{});
+                        self.reportError("(Lexer): Invalid float", .{});
                         return;
                     }
                     self.token_buffer.appendSlice(&[_]u8{ 'n', 'a', 'n' }) catch {
@@ -1221,7 +1221,7 @@ pub const Lexer = struct {
             var b = self.nextByte() catch |err| {
                 if (err == error.BadEOL) {
                     self.reportError(
-                        "Lexer: bad newline character.",
+                        "(Lexer): bad newline character.",
                         .{},
                     );
                     return;
@@ -1245,7 +1245,7 @@ pub const Lexer = struct {
                     var c = self.nextByte() catch |err| {
                         if (err == error.BadEOL) {
                             self.reportError(
-                                "Lexer: bad newline character.",
+                                "(Lexer): bad newline character.",
                                 .{},
                             );
                             return;
@@ -1294,14 +1294,14 @@ pub const Lexer = struct {
                 count = self.nextSlice(boolean[0..4]) catch return;
                 if (count != 4) {
                     self.reportError(
-                        "Lexer: unexpected end of stream",
+                        "(Lexer): unexpected end of stream",
                         .{},
                     );
                     return;
                 }
                 if (!mem.eql(u8, boolean[0..4], "true")) {
                     self.reportError(
-                        "Lexer: Expected boolean value found '{s}'",
+                        "(Lexer): Expected boolean value found '{s}'",
                         .{boolean},
                     );
                     return;
@@ -1311,14 +1311,14 @@ pub const Lexer = struct {
                 count = self.nextSlice(&boolean) catch return;
                 if (count != 5) {
                     self.reportError(
-                        "Lexer: unexpected end of stream",
+                        "(Lexer): unexpected end of stream",
                         .{},
                     );
                     return;
                 }
                 if (!mem.eql(u8, &boolean, "false")) {
                     self.reportError(
-                        "Lexer: Expected boolean value found '{s}'",
+                        "(Lexer): Expected boolean value found '{s}'",
                         .{boolean},
                     );
                     return;
@@ -1341,12 +1341,12 @@ pub const Lexer = struct {
             const b = self.nextByte() catch |err| {
                 if (err == error.BadEOL) {
                     self.reportError(
-                        "Lexer: Expected a newline after carriage return",
+                        "(Lexer): Expected a newline after carriage return",
                         .{},
                     );
                 } else {
                     self.reportError(
-                        "Lexer: expected array closing delimiter ']' before end of stream",
+                        "(Lexer): expected array closing delimiter ']' before end of stream",
                         .{},
                     );
                 }
@@ -1366,7 +1366,7 @@ pub const Lexer = struct {
                 },
                 ',' => {
                     self.reportError(
-                        "Lexer: Unexpected comma ',' inside array",
+                        "(Lexer): Unexpected comma ',' inside array",
                         .{},
                     );
                     return;
@@ -1389,12 +1389,12 @@ pub const Lexer = struct {
             const b = self.nextByte() catch |err| {
                 if (err == error.BadEOL) {
                     self.reportError(
-                        "Lexer: Expected a newline after carriage return",
+                        "(Lexer): Expected a newline after carriage return",
                         .{},
                     );
                 } else {
                     self.reportError(
-                        "Lexer: expected array closing delimiter ']' before end of stream",
+                        "(Lexer): expected array closing delimiter ']' before end of stream",
                         .{},
                     );
                 }
@@ -1419,7 +1419,7 @@ pub const Lexer = struct {
                 ']' => break,
                 else => {
                     self.reportError(
-                        "Lexer: expected comma ',' or array closing bracket ']' found {c}",
+                        "(Lexer): expected comma ',' or array closing bracket ']' found {c}",
                         .{b},
                     );
                 },
@@ -1434,12 +1434,12 @@ pub const Lexer = struct {
             const b = self.nextByte() catch |err| {
                 if (err == error.BadEOL) {
                     self.reportError(
-                        "Lexer: Expected a newline after carriage return",
+                        "(Lexer): Expected a newline after carriage return",
                         .{},
                     );
                 } else {
                     self.reportError(
-                        "Lexer: expected array closing delimiter '}}' before end of stream",
+                        "(Lexer): expected array closing delimiter '}}' before end of stream",
                         .{},
                     );
                 }
@@ -1448,7 +1448,7 @@ pub const Lexer = struct {
 
             if (common.isNewLine(b)) {
                 self.reportError(
-                    "Lexer: Newline not allowed inside inline tables.",
+                    "(Lexer): Newline not allowed inside inline tables.",
                     .{},
                 );
                 return;
@@ -1467,7 +1467,7 @@ pub const Lexer = struct {
                 },
                 ',' => {
                     self.reportError(
-                        "Lexer: Unexpected comma ',' inside inline table.",
+                        "(Lexer): Unexpected comma ',' inside inline table.",
                         .{},
                     );
                     return;
@@ -1491,12 +1491,12 @@ pub const Lexer = struct {
             const b = self.nextByte() catch |err| {
                 if (err == error.BadEOL) {
                     self.reportError(
-                        "Lexer: Expected a newline after carriage return",
+                        "(Lexer): Expected a newline after carriage return",
                         .{},
                     );
                 } else {
                     self.reportError(
-                        "Lexer: expected array closing delimiter '}}' before end of stream",
+                        "(Lexer): expected array closing delimiter '}}' before end of stream",
                         .{},
                     );
                 }
@@ -1505,7 +1505,7 @@ pub const Lexer = struct {
 
             if (common.isNewLine(b)) {
                 self.reportError(
-                    "Lexer: Newline not allowed inside inline tables.",
+                    "(Lexer): Newline not allowed inside inline tables.",
                     .{},
                 );
                 return;
@@ -1526,7 +1526,7 @@ pub const Lexer = struct {
                     self.skipBytes(&WHITESPACE);
                     if (self.consumeByte('}')) {
                         self.reportError(
-                            "Lexer: a trailing comma ',' is not permitted after the last key/value pair in an inline table.",
+                            "(Lexer): a trailing comma ',' is not permitted after the last key/value pair in an inline table.",
                             .{},
                         );
                         return;
@@ -1537,7 +1537,7 @@ pub const Lexer = struct {
                 '}' => break,
                 else => {
                     self.reportError(
-                        "Lexer: expected comma ',' or an inline table terminator '}}' found '{c}'",
+                        "(Lexer): expected comma ',' or an inline table terminator '}}' found '{c}'",
                         .{b},
                     );
                     return;
