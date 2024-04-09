@@ -9,6 +9,8 @@ fn parseTomlFile(f: fs.File) void {
     var p = toml.Parser.init(gpa_allocator.allocator());
     defer p.deinit();
     var t = p.parse(&ifs) catch {
+        const msg = p.errorMessage();
+        std.log.err("{s}\n", .{msg});
         return;
     };
     printTable(t);
