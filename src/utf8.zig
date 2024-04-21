@@ -33,7 +33,7 @@ pub const CharUTF8 = struct {
             return array[0..self.len];
         } else {
             var encoded: [4]u8 = undefined;
-            var len: u8 = unicode.utf8Encode(self.codepoint, &encoded) catch {
+            const len: u8 = unicode.utf8Encode(self.codepoint, &encoded) catch {
                 return "";
             };
             std.debug.assert(len == self.len);
@@ -50,7 +50,7 @@ pub fn readUTF8Codepoint(reader: anytype, bytes_count: *u8) u21 {
     buffer[0] = reader.readByte() catch
         return EOS;
 
-    var count: u8 = unicode.utf8ByteSequenceLength(buffer[0]) catch
+    const count: u8 = unicode.utf8ByteSequenceLength(buffer[0]) catch
         return UTF8_ERROR;
 
     if (count == 1) {
@@ -67,7 +67,7 @@ pub fn readUTF8Codepoint(reader: anytype, bytes_count: *u8) u21 {
             return UTF8_ERROR;
         }
 
-        var codepoint: u21 = unicode.utf8Decode(buffer[0..count]) catch {
+        const codepoint: u21 = unicode.utf8Decode(buffer[0..count]) catch {
             return UTF8_ERROR;
         };
 

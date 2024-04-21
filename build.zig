@@ -5,9 +5,9 @@ pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{});
     const build_options = prepareBuildOptions(b);
 
-    var tomlz = b.createModule(.{
-        .source_file = .{ .path = "src/main.zig" },
-        .dependencies = &.{
+    const tomlz = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .imports = &.{
             .{
                 .name = "build_options",
                 .module = build_options,
@@ -18,13 +18,13 @@ pub fn build(b: *std.Build) !void {
     const lib_fuzz_step = b.step("fuzz", "build static library for fuzzing with afl++ fuzzer.");
     const fuzz_lib = b.addStaticLibrary(.{
         .name = "fuzz-me",
-        .root_source_file = .{ .path = "fuzz/export.zig" },
+        .root_source_file = b.path("fuzz/export.zig"),
         .target = target,
         .optimize = .Debug,
         .link_libc = true,
     });
     fuzz_lib.bundle_compiler_rt = true;
-    fuzz_lib.addModule("tomlz", tomlz);
+    // fuzz_lib.("tomlz", tomlz);
     const fuzz_lib_install = b.addInstallArtifact(
         fuzz_lib,
         .{ .dest_dir = .{ .override = .{ .custom = "../fuzz/fuzzer/link/" } } },
@@ -38,7 +38,7 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
-    binary.addModule("tomlz", tomlz);
+    binary.root_module.addImport("tomlz", tomlz);
     const examples_install_step = b.addInstallArtifact(binary, .{});
     const examples_run_step = b.addRunArtifact(binary);
     examples_run_step.step.dependOn(&examples_install_step.step);
@@ -51,7 +51,7 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
-    test_parser_bin.addModule("tomlz", tomlz);
+    test_parser_bin.root_module.addImport("tomlz", tomlz);
     const test_install_step = b.addInstallArtifact(test_parser_bin, .{});
     test_parser_step.dependOn(&test_install_step.step);
 
@@ -61,7 +61,7 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
-    utest.addModule("build_options", build_options);
+    utest.root_module.addImport("build_options", build_options);
     const run_utest = b.addRunArtifact(utest);
     utest_step.dependOn(&run_utest.step);
 }

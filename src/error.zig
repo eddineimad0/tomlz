@@ -29,7 +29,7 @@ pub const ParseError = struct {
     /// In case there isn't enough memory to print the error
     /// a generic error message will be printed.
     pub fn writeErrorMsg(self: *Self, comptime format: []const u8, args: anytype) void {
-        var required_size = fmt.count(format, args);
+        const required_size = fmt.count(format, args);
         if (opt.ERROR_STACK_BUFFER_SIZE >= required_size) {
             self.error_message = fmt.bufPrint(&self.stack_buffer, format, args) catch unreachable;
             return;

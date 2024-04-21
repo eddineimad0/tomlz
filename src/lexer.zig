@@ -876,7 +876,7 @@ pub const Lexer = struct {
                     // error already reported
                     return error.BadStringEscape;
                 }
-                var num_written: usize = common.toUnicodeCodepoint(hex[0..4]) catch {
+                const num_written: usize = common.toUnicodeCodepoint(hex[0..4]) catch {
                     self.reportError(
                         "(Lexer): '\\u{s}' is not a valid unicode escape",
                         .{hex[0..4]},
@@ -890,7 +890,7 @@ pub const Lexer = struct {
                     // error already reported
                     return error.BadStringEscape;
                 }
-                var num_written: usize = common.toUnicodeCodepoint(hex[0..8]) catch {
+                const num_written: usize = common.toUnicodeCodepoint(hex[0..8]) catch {
                     self.reportError(
                         "(Lexer): '\\U{s}' is not a valid unicode escape",
                         .{hex[0..8]},
@@ -1242,7 +1242,7 @@ pub const Lexer = struct {
                 ' ', 't' => {
                     // in case of a space ' ' we need to read ahead
                     // and make sure this isn't the end.
-                    var c = self.nextByte() catch |err| {
+                    const c = self.nextByte() catch |err| {
                         if (err == error.BadEOL) {
                             self.reportError(
                                 "(Lexer): bad newline character.",
@@ -1285,7 +1285,7 @@ pub const Lexer = struct {
     /// assumes there is at least a byte in stream.
     fn lexBoolean(self: *Self, t: *Token) void {
         self.lex_start = self.position;
-        var initial = self.nextByte() catch unreachable;
+        const initial = self.nextByte() catch unreachable;
         self.unReadNByte(1);
         var boolean: [5]u8 = undefined;
         var count: usize = 0;

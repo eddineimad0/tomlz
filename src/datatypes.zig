@@ -34,14 +34,14 @@ pub const DateTime = struct {
 };
 
 pub const TomlType = enum {
-    Integer,
-    String,
-    Float,
     Boolean,
-    DateTime,
+    Integer,
+    Float,
+    String,
     Array,
     Table,
     TablesArray,
+    DateTime,
 };
 
 pub const TomlTable = StringHashMap(TomlValue);

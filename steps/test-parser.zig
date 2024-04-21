@@ -1,7 +1,7 @@
 //! This file is intended to be used with the toml test suite.
 const std = @import("std");
 const tomlz = @import("tomlz");
-const os = std.os;
+const process = std.process;
 const io = std.io;
 const json = std.json;
 const fmt = std.fmt;
@@ -16,7 +16,7 @@ pub fn main() void {
 
     const input = stdin.readToEndAlloc(allocator, std.math.maxInt(usize)) catch |e| {
         std.log.err("Allocation failure, Error={}\n", .{e});
-        os.exit(1);
+        process.exit(1);
     };
     defer allocator.free(input);
 
@@ -25,22 +25,21 @@ pub fn main() void {
     defer parser.deinit();
 
     // Try to parse the data
-    var table = parser.parse(&stream_source) catch |e| {
+    const table = parser.parse(&stream_source) catch |e| {
         std.log.err("Parser Error, {}", .{e});
-        os.exit(1);
+        process.exit(1);
     }; // compile in debug so we can crash.
     const json_out = toJson(allocator, table) catch |e| {
         std.log.err("Json stringify failure, Error={}", .{e});
-        os.exit(1);
+        process.exit(1);
     };
     defer allocator.free(json_out);
 
     _ = stdout.write(json_out) catch |e| {
         std.log.err("stdout write failure, Error={}", .{e});
-        os.exit(1);
     };
 
-    os.exit(0);
+    process.exit(0);
 }
 
 fn toJson(allocator: std.mem.Allocator, t: *const tomlz.TomlTable) ![]u8 {

@@ -397,7 +397,7 @@ pub const Parser = struct {
                 switch (slice[0]) {
                     'Z' => offs = dt.TimeOffset{ .z = true, .minutes = 0 },
                     '+', '-' => {
-                        var sign: i16 = switch (slice[0]) {
+                        const sign: i16 = switch (slice[0]) {
                             '+' => -1,
                             '-' => 1,
                             else => return null,
@@ -405,9 +405,9 @@ pub const Parser = struct {
                         if (slice.len < 6 or slice[3] != ':') {
                             return null;
                         }
-                        var off_h: u8 = common.parseDigits(u8, slice[1..3]) catch
+                        const off_h: u8 = common.parseDigits(u8, slice[1..3]) catch
                             return null;
-                        var off_m: u8 = common.parseDigits(u8, slice[4..6]) catch
+                        const off_m: u8 = common.parseDigits(u8, slice[4..6]) catch
                             return null;
 
                         offs = dt.TimeOffset{
@@ -523,7 +523,7 @@ pub const Parser = struct {
     ) (mem.Allocator.Error || Parser.Error)!*dt.TomlValue {
         switch (self.state.context) {
             .Table => {
-                var tbl: *dt.TomlTable = @alignCast(@ptrCast(self.state.target));
+                const tbl: *dt.TomlTable = @alignCast(@ptrCast(self.state.target));
                 const key = self.state.key;
                 // we need to handle dotted keys "a.b.c";
                 const dest_table = try self.walkKeyPath(tbl, key_path.data());
@@ -646,7 +646,7 @@ pub const Parser = struct {
         var new_table = dt.TomlTable.init(self.arena.allocator());
         try new_table.ensureTotalCapacity(opt.DEFAULT_HASHMAP_SIZE);
         tbl_array[tbl_array.len - 1] = new_table;
-        var value = dt.TomlValue{ .TablesArray = tbl_array };
+        const value = dt.TomlValue{ .TablesArray = tbl_array };
         try outter.put(self.state.key, value);
         return &tbl_array[tbl_array.len - 1];
     }

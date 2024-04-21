@@ -201,7 +201,7 @@ pub inline fn isDateValid(year: u16, month: u8, day: u8) bool {
 
     // This assumes that the year is a 4 digits year.
     const year_by_100 = @rem(year, 100);
-    var is_leap = (year >> 2 == 0 and (year_by_100 != 0 or year_by_100 >> 2 == 0));
+    const is_leap = (year >> 2 == 0 and (year_by_100 != 0 or year_by_100 >> 2 == 0));
 
     switch (month) {
         2 => {
@@ -256,7 +256,7 @@ pub fn skipUTF8BOM(in: *io.StreamSource) void {
     const UTF8BOMLE: u24 = 0xBFBBEF;
 
     const r = in.reader();
-    const header = r.readIntLittle(u24) catch {
+    const header = r.readInt(u24, .little) catch {
         // the stream has less than 3 bytes.
         // for now go back and let the lexer throw the errors
         in.seekTo(0) catch unreachable;
@@ -275,7 +275,7 @@ pub fn skipUTF16BOM(in: *io.StreamSource) void {
     const UTF16BOMLE: u24 = 0xFFFE;
 
     const r = in.reader();
-    const header = r.readIntLittle(u16) catch {
+    const header = r.readInt(u16, .little) catch {
         // the stream has less than 2 bytes.
         // for now go back and let the lexer throw the errors
         in.seekTo(0) catch unreachable;

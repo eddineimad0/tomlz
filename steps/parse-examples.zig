@@ -8,7 +8,7 @@ fn parseTomlFile(f: fs.File) void {
     var ifs = io.StreamSource{ .file = f };
     var p = toml.Parser.init(gpa_allocator.allocator());
     defer p.deinit();
-    var t = p.parse(&ifs) catch {
+    const t = p.parse(&ifs) catch {
         const msg = p.errorMessage();
         std.log.err("{s}\n", .{msg});
         return;
@@ -86,7 +86,7 @@ pub fn main() !void {
 
     var path: [std.fs.MAX_PATH_BYTES]u8 = undefined;
 
-    const cwd = try std.os.getcwd(&path);
+    const cwd = try std.process.getCwd(&path);
 
     const target_path = if (target) |t|
         try fs.path.join(allocator, &.{ cwd, "examples", t })
@@ -95,7 +95,7 @@ pub fn main() !void {
 
     defer allocator.free(target_path);
 
-    var examples_dir = try fs.openIterableDirAbsolute(target_path, .{});
+    var examples_dir = try fs.openDirAbsolute(target_path, .{ .iterate = true });
     defer examples_dir.close();
 
     var walker = try examples_dir.walk(allocator);
@@ -112,7 +112,7 @@ pub fn main() !void {
                 if (!std.mem.eql(u8, entry.path[pos.?..entry.path.len], ".toml")) {
                     continue;
                 }
-                var example = try examples_dir.dir.openFile(entry.path, .{});
+                var example = try examples_dir.openFile(entry.path, .{});
                 defer example.close();
                 std.debug.print("\n========= Testing file {s} ===========\n", .{entry.path});
                 parseTomlFile(example);
