@@ -1,7 +1,7 @@
 A TOML parser written in zig that targets v1.0 specs of TOML.
 
 ## Supported zig versions
-✅ [0.11.0](https://ziglang.org/documentation/0.11.0/)   
+✅ [0.12.0](https://ziglang.org/documentation/0.12.0/)   
 
 ## Test suite coverage
 [toml-test](https://github.com/toml-lang/toml-test) is a language-agnostic test suite to verify the correctness of TOML parsers and writers.
