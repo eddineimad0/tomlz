@@ -85,6 +85,25 @@ pub const Parser = struct {
         self.err.deinit();
     }
 
+    /// Parses the 'toml_input', decodes it and returns a TomlTable.
+    /// in case of an error call *errorMessage()* to get a detailed
+    /// error message.
+    /// TomlTable which is an alias to std.StringHashMap(TomlValue).
+    /// TomlValue type represent the following tagged union:
+    /// union(TomlType) {
+    ///     Boolean: bool,
+    ///     Integer: i64,
+    ///     Float: f64,
+    ///     String: []const u8,
+    ///     Array: []TomlValue,
+    ///     Table: TomlTable,
+    ///     TablesArray: []TomlTable,
+    ///     DateTime: DateTime,
+    /// };
+    /// aside from DateTime all other types are standard zig types.
+    /// all data returned by the parser is owned by the parser and
+    /// will be freed once deinit is called or subsequent calls to *parse()*,
+    /// consider cloning anything you need to outlive the parser.
     pub fn parse(
         self: *Self,
         toml_input: *io.StreamSource,
