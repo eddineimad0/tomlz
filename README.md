@@ -1,7 +1,7 @@
 A TOML parser written in zig that targets v1.0 specs of TOML.
 
 ## Supported zig versions
-✅ [0.12.0](https://ziglang.org/documentation/0.12.0/)   
+✅ [0.13.0](https://ziglang.org/documentation/0.13.0/)   
 
 ## Test suite coverage
 [toml-test](https://github.com/toml-lang/toml-test) is a language-agnostic test suite to verify the correctness of TOML parsers and writers.
@@ -18,7 +18,8 @@ pub fn main() !void {
     defer std.debug.assert(gpa_allocator.deinit() == .ok);
     const allocator = gpa_allocator.allocator();
 
-    // the toml parser takes an allocator and uses it internally for all allocations.
+    // the toml parser takes an allocator and uses it internally
+    for all allocations.
     var p = toml.Parser.init(gpa_allocator.allocator());
     // when done deinit the parser to free all allocated resources.
     defer p.deinit();
@@ -73,4 +74,5 @@ pub fn main() !void {
 ```
 
 ## Build options
-The build.zig file contains various options that can be used to customize the behaviour of the parser when building, check it out for more details.
+The build.zig file contains various options that can be used to customize
+the behaviour of the parser when building, check it out for more details.
