@@ -24,7 +24,6 @@ pub fn build(b: *std.Build) !void {
         .link_libc = true,
     });
     fuzz_lib.bundle_compiler_rt = true;
-    // fuzz_lib.("tomlz", tomlz);
     const fuzz_lib_install = b.addInstallArtifact(
         fuzz_lib,
         .{ .dest_dir = .{ .override = .{ .custom = "../fuzz/fuzzer/link/" } } },
@@ -34,7 +33,7 @@ pub fn build(b: *std.Build) !void {
     const examples_step = b.step("parse-examples", "Compile and parse toml examples");
     const binary = b.addExecutable(.{
         .name = "parse-examples",
-        .root_source_file = .{ .path = "steps/parse-examples.zig" },
+        .root_source_file = b.path("steps/parse-examples.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -47,7 +46,7 @@ pub fn build(b: *std.Build) !void {
     const test_parser_step = b.step("test-parser", "Compile a binary to run against the toml test suite");
     const test_parser_bin = b.addExecutable(.{
         .name = "test-parser",
-        .root_source_file = .{ .path = "steps/test-parser.zig" },
+        .root_source_file = b.path("steps/test-parser.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -57,7 +56,7 @@ pub fn build(b: *std.Build) !void {
 
     const utest_step = b.step("test", "Run unit tests");
     const utest = b.addTest(.{
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
