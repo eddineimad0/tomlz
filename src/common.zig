@@ -200,8 +200,9 @@ pub inline fn isDateValid(year: u16, month: u8, day: u8) bool {
     }
 
     // This assumes that the year is a 4 digits year.
-    const year_by_100 = @rem(year, 100);
-    const is_leap = (year >> 2 == 0 and (year_by_100 != 0 or year_by_100 >> 2 == 0));
+    const rem_year_by_100 = year % 100;
+    const rem_year_by_400 = year % 400;
+    const is_leap = (year % 2 == 0 and (rem_year_by_100 != 0 or rem_year_by_400 == 0));
 
     switch (month) {
         2 => {
