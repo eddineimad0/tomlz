@@ -82,10 +82,7 @@ pub const Lexer = struct {
     }
 
     inline fn nextState(self: *Self) ?LexFuncPtr {
-        return if (self.state_func_stack.items.len == 0)
-            null
-        else
-            self.state_func_stack.pop();
+        return self.state_func_stack.pop() orelse null;
     }
 
     /// Populates the token 't' and set the state function to **EMIT_FUNC**.

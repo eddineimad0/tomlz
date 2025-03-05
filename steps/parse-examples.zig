@@ -84,7 +84,7 @@ pub fn main() !void {
     _ = args.skip();
     const target = args.next();
 
-    var path: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+    var path: [std.fs.max_path_bytes]u8 = undefined;
 
     const cwd = try std.process.getCwd(&path);
 

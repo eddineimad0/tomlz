@@ -177,7 +177,7 @@ pub inline fn toUnicodeCodepoint(bytes: []u8) !usize {
 /// use only to parse toml date or timestamp.
 pub fn parseDigits(comptime T: type, buff: []const u8) error{NotANumber}!T {
     switch (@typeInfo(T)) {
-        .Int => |IntType| switch (IntType.signedness) {
+        .int => |IntType| switch (IntType.signedness) {
             .unsigned => {},
             .signed => @compileError("parseDigits doesn't support signed integers"),
         },

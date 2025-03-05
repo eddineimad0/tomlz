@@ -24,6 +24,7 @@ pub fn build(b: *std.Build) !void {
         .link_libc = true,
     });
     fuzz_lib.bundle_compiler_rt = true;
+    fuzz_lib.root_module.addImport("tomlz", tomlz);
     const fuzz_lib_install = b.addInstallArtifact(
         fuzz_lib,
         .{ .dest_dir = .{ .override = .{ .custom = "../fuzz/fuzzer/link/" } } },

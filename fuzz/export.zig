@@ -15,10 +15,10 @@ export fn fuzzTomlz(buffer: [*]const u8, size: usize) callconv(.C) void {
     var parser = tomlz.Parser.init(allocator);
     defer parser.deinit();
     // Try to parse the data
-    var parsed_table = parser.parse(&stream_source) catch unreachable; // compile in debug so we can crash.
+    const parsed_table = parser.parse(&stream_source) catch unreachable; // compile in debug so we can crash.
     _ = parsed_table;
 }
 
 comptime {
-    @export(fuzzTomlz, .{ .name = "fuzz_tomlz", .linkage = .Strong });
+    @export(&fuzzTomlz, .{ .name = "fuzz_tomlz", .linkage = .strong });
 }
