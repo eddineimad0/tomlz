@@ -1,6 +1,6 @@
 const std = @import("std");
 const lex = @import("lexer.zig");
-const common = @import("common.zig");
+const utils = @import("utils.zig");
 const dt = @import("datatypes.zig");
 const opt = @import("build_options");
 
@@ -11,9 +11,9 @@ const io = std.io;
 const debug = std.debug;
 
 const StringHashmap = std.StringHashMap;
-const TomlValueArray = common.DynArray(dt.TomlValue);
+const TomlValueArray = utils.DynArray(dt.TomlValue);
 const TomlArrayStack = std.SegmentedList(TomlValueArray, 8);
-const KeyPathStack = std.SegmentedList(common.DynArray(dt.Key), 4);
+const KeyPathStack = std.SegmentedList(utils.DynArray(dt.Key), 4);
 const ParseError = @import("error.zig").ParseError;
 
 pub const Parser = struct {
@@ -119,7 +119,7 @@ pub const Parser = struct {
         try self.implicit_map.ensureTotalCapacity(16);
         try self.inline_map.ensureTotalCapacity(16);
 
-        var key_path = try common.DynArray(dt.Key).initCapacity(
+        var key_path = try utils.DynArray(dt.Key).initCapacity(
             self.base_allocator,
             opt.INITIAL_ARRAY_SIZE,
         );
@@ -127,8 +127,8 @@ pub const Parser = struct {
 
         self.state = .{ .context = .Table, .target = &self.root, .key = DEBUG_KEY };
 
-        common.skipUTF16BOM(toml_input);
-        common.skipUTF8BOM(toml_input);
+        utils.skipUTF16BOM(toml_input);
+        utils.skipUTF8BOM(toml_input);
         var lexer = try lex.Lexer.init(self.base_allocator, toml_input);
         defer lexer.deinit();
 
@@ -227,7 +227,7 @@ pub const Parser = struct {
         self: *Self,
         new_context: ParserContext,
         new_put_target: *anyopaque,
-        current_key_path: *common.DynArray(dt.Key),
+        current_key_path: *utils.DynArray(dt.Key),
     ) mem.Allocator.Error!void {
         try self.state_stack.append(self.base_allocator, self.state);
         self.state = .{
@@ -237,7 +237,7 @@ pub const Parser = struct {
         };
         if (current_key_path.size() > 0) {
             try self.key_path_stack.append(self.base_allocator, current_key_path.*);
-            current_key_path.* = try common.DynArray(dt.Key).initCapacity(
+            current_key_path.* = try utils.DynArray(dt.Key).initCapacity(
                 self.base_allocator,
                 opt.INITIAL_ARRAY_SIZE,
             );
@@ -246,7 +246,7 @@ pub const Parser = struct {
 
     fn popState(
         self: *Self,
-        current_key_path: *common.DynArray(dt.Key),
+        current_key_path: *utils.DynArray(dt.Key),
     ) void {
         self.state = self.state_stack.pop() orelse .{
             .context = .Table,
@@ -267,7 +267,7 @@ pub const Parser = struct {
     ) (mem.Allocator.Error || Parser.Error)!void {
         switch (t.tag) {
             .Integer => {
-                if (!isValidNumber(t.value.?)) {
+                if (!utils.isValidNumber(t.value.?)) {
                     self.err.writeErrorMsg(
                         "[line:{d},col:{d}] (Parser): '{s}' isn't a valid integer",
                         .{ t.start.line, t.start.column, t.value.? },
@@ -289,7 +289,7 @@ pub const Parser = struct {
                 v.* = dt.TomlValue{ .Boolean = boolean };
             },
             .Float => {
-                if (!isValidFloat(t.value.?)) {
+                if (!utils.isValidFloat(t.value.?)) {
                     self.err.writeErrorMsg(
                         "[line:{d},col:{d}] (Parser): '{s}' isn't a valid float",
                         .{ t.start.line, t.start.column, t.value.? },
@@ -347,7 +347,7 @@ pub const Parser = struct {
         var expect_time: bool = false;
         output.date = parseDate(input);
         if (output.date) |date| {
-            if (!common.isDateValid(date.year, date.month, date.day)) {
+            if (!utils.isDateValid(date.year, date.month, date.day)) {
                 self.err.writeErrorMsg(
                     "[line:{d},col:{d}] (Parser): {d}-{d}-{d} is not a valid date",
                     .{ token.start.line, token.start.column, date.year, date.month, date.day },
@@ -373,7 +373,7 @@ pub const Parser = struct {
 
         output.time = parseTime(input);
         if (output.time) |t| {
-            if (!common.isTimeValid(t.hour, t.minute, t.second)) {
+            if (!utils.isTimeValid(t.hour, t.minute, t.second)) {
                 self.err.writeErrorMsg(
                     "[line:{d},col:{d}] (Parser): {d}:{d}:{d}.{d} is not a valid time",
                     .{ token.start.line, token.start.column, t.hour, t.minute, t.second, t.nano_second },
@@ -381,7 +381,7 @@ pub const Parser = struct {
                 return Error.InvalidTime;
             }
             if (t.offset) |offs| {
-                if (!common.isTimeValid(offs.hour, offs.minute, 0)) {
+                if (!utils.isTimeValid(offs.hour, offs.minute, 0)) {
                     self.err.writeErrorMsg(
                         "[line:{d},col:{d}] (Parser): {d}:{d} is not a valid offset",
                         .{ token.start.line, token.start.column, offs.hour, offs.minute },
@@ -408,9 +408,9 @@ pub const Parser = struct {
         if (src[4] != '-' or src[7] != '-') {
             return null;
         }
-        const y = common.parseDigits(u16, src[0..4]) catch return null;
-        const m = common.parseDigits(u8, src[5..7]) catch return null;
-        const d = common.parseDigits(u8, src[8..10]) catch return null;
+        const y = utils.parseDigits(u16, src[0..4]) catch return null;
+        const m = utils.parseDigits(u8, src[5..7]) catch return null;
+        const d = utils.parseDigits(u8, src[8..10]) catch return null;
         return dt.Date{
             .year = y,
             .month = m,
@@ -426,9 +426,9 @@ pub const Parser = struct {
         if (src[2] != ':' or src[5] != ':') {
             return null;
         }
-        const h = common.parseDigits(u8, src[0..2]) catch return null;
-        const m = common.parseDigits(u8, src[3..5]) catch return null;
-        const s = common.parseDigits(u8, src[6..8]) catch return null;
+        const h = utils.parseDigits(u8, src[0..2]) catch return null;
+        const m = utils.parseDigits(u8, src[3..5]) catch return null;
+        const s = utils.parseDigits(u8, src[6..8]) catch return null;
 
         var ns: u32 = 0;
 
@@ -437,7 +437,7 @@ pub const Parser = struct {
         if (src.len > 8) {
             var slice = src[8..src.len];
             if (slice[0] == '.') {
-                const stop = common.parseNanoSeconds(slice[1..slice.len], &ns);
+                const stop = utils.parseNanoSeconds(slice[1..slice.len], &ns);
                 slice = slice[stop + 1 .. slice.len];
             }
 
@@ -453,9 +453,9 @@ pub const Parser = struct {
                         if (slice.len < 6 or slice[3] != ':') {
                             return null;
                         }
-                        const off_h: u8 = common.parseDigits(u8, slice[1..3]) catch
+                        const off_h: u8 = utils.parseDigits(u8, slice[1..3]) catch
                             return null;
-                        const off_m: u8 = common.parseDigits(u8, slice[4..6]) catch
+                        const off_m: u8 = utils.parseDigits(u8, slice[4..6]) catch
                             return null;
 
                         offs = dt.TimeOffset{
@@ -569,7 +569,7 @@ pub const Parser = struct {
     fn putValue(
         self: *Self,
         value: *dt.TomlValue,
-        key_path: *common.DynArray(dt.Key),
+        key_path: *utils.DynArray(dt.Key),
     ) (mem.Allocator.Error || Parser.Error)!*dt.TomlValue {
         switch (self.state.context) {
             .Table => {
@@ -595,7 +595,7 @@ pub const Parser = struct {
 
     fn createTable(
         self: *Self,
-        header_path: *common.DynArray(dt.Key),
+        header_path: *utils.DynArray(dt.Key),
     ) (mem.Allocator.Error || Parser.Error)!*dt.TomlTable {
         var new_table = dt.TomlTable.init(self.arena.allocator());
         try new_table.ensureTotalCapacity(opt.INITIAL_HASHMAP_SIZE);
@@ -647,7 +647,7 @@ pub const Parser = struct {
 
     fn createTablesArray(
         self: *Self,
-        header_path: *common.DynArray(dt.Key),
+        header_path: *utils.DynArray(dt.Key),
     ) (mem.Allocator.Error || Parser.Error)!*dt.TomlTable {
         debug.assert(self.state.context == ParserContext.Table);
         const outter = try self.walkHeaderPath(&self.root, header_path.data());
@@ -718,7 +718,7 @@ pub const Parser = struct {
         slice: []const u8,
     ) (mem.Allocator.Error || Parser.Error)![]const u8 {
         // debug.print("TRIM={s}\n", .{slice});
-        var trimmed = try common.String8.initCapacity(allocator, slice.len);
+        var trimmed = try utils.String8.initCapacity(allocator, slice.len);
         errdefer trimmed.deinit();
 
         var i: usize = 0;
@@ -751,64 +751,5 @@ pub const Parser = struct {
             i += 1;
         }
         return try trimmed.toOwnedSlice();
-    }
-
-    fn isValidFloat(float: []const u8) bool {
-        var valid = true;
-        valid = valid and isUnderscoresSurrounded(float) and !hasLeadingZero(float);
-        // period check.
-        // 7. and 3.e+20 are not valid float in toml 1.0 spec
-        if (mem.indexOf(u8, float, &[_]u8{'.'})) |index| {
-            valid = valid and (float.len > index + 1 and common.isDigit(float[index + 1]));
-            valid = valid and (index > 0 and common.isDigit(float[index - 1]));
-        }
-
-        return valid;
-    }
-
-    fn isUnderscoresSurrounded(num: []const u8) bool {
-        if (num.len > 1) {
-            if (num[0] == '_' or num[num.len - 1] == '_') {
-                return false;
-            }
-
-            for (1..num.len - 1) |i| {
-                if (num[i] == '_') {
-                    if (!common.isHex(num[i - 1]) or !common.isHex(num[i + 1])) {
-                        return false;
-                    }
-                }
-            }
-        }
-        return true;
-    }
-
-    fn hasLeadingZero(num: []const u8) bool {
-        var has_leading_zero = false;
-        if (num.len > 2 and
-            (num[0] == '+' or
-                num[0] == '-') and
-            num[1] == '0' and
-            !(num[2] == '.' or num[2] == 'e'))
-        {
-            has_leading_zero = true;
-        } else if (num.len > 1 and
-            num[0] == '0' and
-            !(num[1] == 'b' or
-                num[1] == 'o' or
-                num[1] == 'x' or
-                num[1] == '.' or
-                num[1] == 'e'))
-        {
-            has_leading_zero = true;
-        }
-        return has_leading_zero;
-    }
-
-    fn isValidNumber(num: []const u8) bool {
-        var valid = true;
-        valid = valid and isUnderscoresSurrounded(num) and
-            !hasLeadingZero(num);
-        return valid;
     }
 };

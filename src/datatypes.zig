@@ -1,9 +1,6 @@
 //! This file contains type definitions for all Toml types
 
 const std = @import("std");
-const common = @import("common.zig");
-
-const mem = std.mem;
 
 const StringHashMap = std.StringHashMap;
 
