@@ -13,6 +13,7 @@ const debug = std.debug;
 const StringHashmap = std.StringHashMap;
 const TomlValueArray = common.DynArray(dt.TomlValue);
 const TomlArrayStack = std.SegmentedList(TomlValueArray, 8);
+const KeyPathStack = std.SegmentedList(common.DynArray(dt.Key), 4);
 const ParseError = @import("error.zig").ParseError;
 
 pub const Parser = struct {
@@ -53,6 +54,7 @@ pub const Parser = struct {
     arena: heap.ArenaAllocator,
     state_stack: ParserStateStack,
     array_stack: TomlArrayStack, // keeps track of nested arrays.
+    key_path_stack: KeyPathStack,
     state: ParserState,
     err: ParseError,
     root: dt.TomlTable,
@@ -65,6 +67,7 @@ pub const Parser = struct {
             .inline_map = StringHashmap(void).init(allocator),
             .array_stack = TomlArrayStack{},
             .state_stack = ParserStateStack{},
+            .key_path_stack = KeyPathStack{},
             .base_allocator = allocator,
             .arena = heap.ArenaAllocator.init(allocator),
             .root = dt.TomlTable.init(allocator),
@@ -80,6 +83,7 @@ pub const Parser = struct {
         self.inline_map.deinit();
         self.array_stack.deinit(self.base_allocator);
         self.state_stack.deinit(self.base_allocator);
+        self.key_path_stack.deinit(self.base_allocator);
         self.arena.deinit();
         self.root.deinit();
         self.err.deinit();
@@ -141,15 +145,15 @@ pub const Parser = struct {
                     return Error.LexerError;
                 },
                 .TableStart, .ArrayTableStart => {
-                    self.popState();
+                    self.popState(&key_path);
                 },
                 .TableEnd => {
                     const table = try self.createTable(&key_path);
-                    try self.pushState(.Table, table);
+                    try self.pushState(.Table, table, &key_path);
                 },
                 .ArrayTableEnd => {
                     const tbl = try self.createTablesArray(&key_path);
-                    try self.pushState(.Table, tbl);
+                    try self.pushState(.Table, tbl, &key_path);
                 },
                 .ArrayStart => {
                     try self.array_stack.append(
@@ -162,6 +166,7 @@ pub const Parser = struct {
                     try self.pushState(
                         .Array,
                         self.array_stack.at(self.array_stack.len - 1),
+                        &key_path,
                     );
                 },
                 .ArrayEnd => {
@@ -169,16 +174,16 @@ pub const Parser = struct {
                     const slice = try array.toOwnedSlice();
                     array.deinit();
                     var value = dt.TomlValue{ .Array = slice };
-                    self.popState();
+                    self.popState(&key_path);
                     _ = try self.putValue(&value, &key_path);
                 },
                 .InlineTableStart => {
                     const table = try self.createTable(&key_path);
                     try self.inline_map.put(self.state.key, {});
-                    try self.pushState(.Table, table);
+                    try self.pushState(.Table, table, &key_path);
                 },
                 .InlineTableEnd => {
-                    self.popState();
+                    self.popState(&key_path);
                 },
                 .Comment => {},
                 .Key => {
@@ -222,6 +227,7 @@ pub const Parser = struct {
         self: *Self,
         new_context: ParserContext,
         new_put_target: *anyopaque,
+        current_key_path: *common.DynArray(dt.Key),
     ) mem.Allocator.Error!void {
         try self.state_stack.append(self.base_allocator, self.state);
         self.state = .{
@@ -229,14 +235,28 @@ pub const Parser = struct {
             .target = new_put_target,
             .key = DEBUG_KEY,
         };
+        if (current_key_path.size() > 0) {
+            try self.key_path_stack.append(self.base_allocator, current_key_path.*);
+            current_key_path.* = try common.DynArray(dt.Key).initCapacity(
+                self.base_allocator,
+                opt.INITIAL_ARRAY_SIZE,
+            );
+        }
     }
 
-    fn popState(self: *Self) void {
+    fn popState(
+        self: *Self,
+        current_key_path: *common.DynArray(dt.Key),
+    ) void {
         self.state = self.state_stack.pop() orelse .{
             .context = .Table,
             .target = &self.root,
             .key = DEBUG_KEY,
         };
+        if (self.key_path_stack.len > 0) {
+            current_key_path.deinit();
+            current_key_path.* = self.key_path_stack.pop() orelse unreachable;
+        }
     }
 
     fn parseValue(
