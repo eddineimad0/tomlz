@@ -149,14 +149,14 @@ fn jsonStringifyValue(v: *const tomlz.TomlValue, wr: *std.ArrayList(u8).Writer) 
                     if (ts.time.?.offset.?.z) {
                         offset = try fmt.bufPrint(&offset_buffer, "Z", .{});
                     } else {
-                        const sign: u8 = if (ts.time.?.offset.?.minutes < 0) '+' else '-';
-                        const offs = if (sign == '-') -1 * ts.time.?.offset.?.minutes else ts.time.?.offset.?.minutes;
-                        const hours = @divFloor(offs, 60);
-                        const minutes = @mod(offs, 60);
+                        //const sign: u8 = if (ts.time.?.offset.?.sign < 0) '+' else '-';
+                        //const offs = if (sign == '-') -1 * ts.time.?.offset.?.minutes else ts.time.?.offset.?.minutes;
+                        //const hours = @divFloor(offset.h, 60);
+                        //const minutes = @mod(offs, 60);
                         offset = try fmt.bufPrint(
                             &offset_buffer,
                             "{d:0>2}:{d:0>2}",
-                            .{ hours, minutes },
+                            .{ ts.time.?.offset.?.hour, ts.time.?.offset.?.minute },
                         );
                     }
                 } else {
@@ -195,7 +195,7 @@ fn jsonStringifyValue(v: *const tomlz.TomlValue, wr: *std.ArrayList(u8).Writer) 
                         offset = try fmt.bufPrint(
                             &offset_buffer,
                             "{d}",
-                            .{ts.time.?.offset.?.minutes},
+                            .{ts.time.?.offset.?.minute},
                         );
                     }
                 } else {

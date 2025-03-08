@@ -29,7 +29,7 @@ pub const Parser = struct {
 
     const ParserStateStack = std.SegmentedList(ParserState, 8);
 
-    const DEBUG_KEY = "__TOML_DEBUG";
+    const DEBUG_KEY = "__TOMLZ_DEBUG";
 
     const Error = error{
         LexerError,
@@ -360,6 +360,15 @@ pub const Parser = struct {
                 );
                 return Error.InvalidTime;
             }
+            if (t.offset) |offs| {
+                if (!common.isTimeValid(offs.hour, offs.minute, 0)) {
+                    self.err.writeErrorMsg(
+                        "[line:{d},col:{d}] (Parser): {d}:{d} is not a valid offset",
+                        .{ token.start.line, token.start.column, offs.hour, offs.minute },
+                    );
+                    return Error.InvalidTime;
+                }
+            }
         } else {
             if (output.date == null or expect_time) {
                 self.err.writeErrorMsg(
@@ -414,7 +423,7 @@ pub const Parser = struct {
 
             if (slice.len > 0) {
                 switch (slice[0]) {
-                    'Z' => offs = dt.TimeOffset{ .z = true, .minutes = 0 },
+                    'Z' => offs = dt.TimeOffset{ .z = true, .sign = 0, .hour = 0, .minute = 0 },
                     '+', '-' => {
                         const sign: i16 = switch (slice[0]) {
                             '+' => -1,
@@ -431,7 +440,9 @@ pub const Parser = struct {
 
                         offs = dt.TimeOffset{
                             .z = false,
-                            .minutes = ((@as(i16, off_h) * 60) + @as(i16, off_m)) * sign,
+                            .sign = sign,
+                            .hour = off_h,
+                            .minute = off_m,
                         };
                     },
                     else => return null,

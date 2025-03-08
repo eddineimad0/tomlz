@@ -17,7 +17,9 @@ pub const Date = struct {
 
 pub const TimeOffset = struct {
     z: bool,
-    minutes: i16,
+    sign: i16,
+    hour: u8,
+    minute: u8,
 };
 
 pub const Time = struct {
