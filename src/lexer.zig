@@ -1,5 +1,5 @@
 const std = @import("std");
-const common = @import("common.zig");
+const utils = @import("utils.zig");
 const utf8 = @import("utf8.zig");
 const opt = @import("build_options");
 
@@ -50,16 +50,16 @@ pub const TokenTag = enum(i8) {
 pub const Token = struct {
     tag: TokenTag,
     value: ?[]const u8,
-    start: common.Position,
+    start: utils.Position,
 };
 
 pub const Lexer = struct {
     input: *io.StreamSource,
     read_idx: usize, // current read index into the input.
-    position: common.Position,
+    position: utils.Position,
     // position from where we started lexing the current token.
-    lex_start: common.Position,
-    token_buffer: common.DynArray(u8),
+    lex_start: utils.Position,
+    token_buffer: utils.DynArray(u8),
     state_func_stack: Stack(?LexFuncPtr),
     err_msg: ?[]const u8,
 
@@ -91,7 +91,7 @@ pub const Lexer = struct {
         t: *Token,
         tag: TokenTag,
         value: ?[]const u8,
-        pos: *const common.Position,
+        pos: *const utils.Position,
     ) void {
         t.* = .{ .tag = tag, .value = value, .start = pos.* };
         self.pushStateOrThrow(EMIT_FUNC);
@@ -129,7 +129,7 @@ pub const Lexer = struct {
             self.read_idx += 1;
             self.position.line += 1;
             self.position.column = 0;
-        } else if (common.isNewLine(cp)) {
+        } else if (utils.isNewLine(cp)) {
             self.position.line += 1;
             self.position.column = 0;
         }
@@ -242,14 +242,14 @@ pub const Lexer = struct {
         var c: utf8.CharUTF8 = undefined;
         self.readChar(&c) catch return;
 
-        if (common.isControl(c.codepoint)) {
+        if (utils.isControl(c.codepoint)) {
             self.reportError(
                 "(Lexer): Stream contains control character '0x{x:0>2}'",
                 .{c.codepoint},
             );
             return;
-        } else if (common.isWhiteSpace(c.codepoint) or
-            common.isNewLine(c.codepoint))
+        } else if (utils.isWhiteSpace(c.codepoint) or
+            utils.isNewLine(c.codepoint))
         {
             self.skipBytes(&(WHITESPACE ++ NEWLINE));
             self.pushStateOrThrow(lexRoot);
@@ -284,7 +284,7 @@ pub const Lexer = struct {
         while (true) {
             self.readChar(&c) catch return;
 
-            if (common.isControl(c.codepoint)) {
+            if (utils.isControl(c.codepoint)) {
                 self.reportError(
                     "(Lexer): control character '{u}' not allowed in comments",
                     .{c.codepoint},
@@ -292,7 +292,7 @@ pub const Lexer = struct {
                 return;
             }
 
-            if (common.isNewLine(c.codepoint) or c.codepoint == utf8.EOS) {
+            if (utils.isNewLine(c.codepoint) or c.codepoint == utf8.EOS) {
                 break;
             }
 
@@ -479,7 +479,7 @@ pub const Lexer = struct {
         while (true) {
             self.readChar(&c) catch return;
 
-            if (!common.isBareKeyChar(c.codepoint)) {
+            if (!utils.isBareKeyChar(c.codepoint)) {
                 self.unReadNByte(c.len);
                 break;
             }
@@ -514,7 +514,7 @@ pub const Lexer = struct {
             return;
         };
 
-        if (common.isDigit(b)) {
+        if (utils.isDigit(b)) {
             self.unReadNByte(1);
             self.pushStateOrThrow(lexNumber);
             return;
@@ -605,7 +605,7 @@ pub const Lexer = struct {
                 while (true) {
                     self.readChar(&c) catch return;
 
-                    if (common.isNewLine(c.codepoint)) {
+                    if (utils.isNewLine(c.codepoint)) {
                         self.reportError(
                             "(Lexer): basic string can't contain a newline character '0x{X:0>2}'",
                             .{c.codepoint},
@@ -613,7 +613,7 @@ pub const Lexer = struct {
                         return;
                     }
 
-                    if (common.isControl(c.codepoint)) {
+                    if (utils.isControl(c.codepoint)) {
                         self.reportError(
                             "(Lexer): control character '{u}' not allowed in basic strings",
                             .{c.codepoint},
@@ -646,14 +646,14 @@ pub const Lexer = struct {
                 while (true) {
                     self.readChar(&c) catch return;
 
-                    if (common.isControl(c.codepoint)) {
+                    if (utils.isControl(c.codepoint)) {
                         self.reportError(
                             "(Lexer): control character '{u}' not allowed in litteral strings",
                             .{c.codepoint},
                         );
                         return;
                     }
-                    if (common.isNewLine(c.codepoint)) {
+                    if (utils.isNewLine(c.codepoint)) {
                         self.reportError(
                             "(Lexer): litteral string can't contain a newline character '0x{X:0>2}'",
                             .{c.codepoint},
@@ -685,7 +685,7 @@ pub const Lexer = struct {
         while (true) {
             self.readChar(&c) catch return;
 
-            if (common.isControl(c.codepoint)) {
+            if (utils.isControl(c.codepoint)) {
                 self.reportError(
                     "(Lexer): control character '{u}' not allowed in basic strings",
                     .{c.codepoint},
@@ -744,7 +744,7 @@ pub const Lexer = struct {
         while (true) {
             self.readChar(&c) catch return;
 
-            if (common.isControl(c.codepoint)) {
+            if (utils.isControl(c.codepoint)) {
                 self.reportError(
                     "(Lexer): control character '{u}' not allowed in basic strings",
                     .{c.codepoint},
@@ -808,7 +808,7 @@ pub const Lexer = struct {
             return error.BadStringEscape;
         };
 
-        if (common.isWhiteSpace(b)) {
+        if (utils.isWhiteSpace(b)) {
             // Whitespace is allowed after line ending backslash
             self.skipBytes(&WHITESPACE);
             b = self.nextByte() catch {
@@ -819,7 +819,7 @@ pub const Lexer = struct {
                 return error.BadStringEscape;
             };
 
-            if (common.isNewLine(b)) {
+            if (utils.isNewLine(b)) {
                 self.token_buffer.appendSlice(&[_]u8{ '\\', b }) catch |e| {
                     self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                     return e;
@@ -832,7 +832,7 @@ pub const Lexer = struct {
                 );
                 return error.BadStringEscape;
             }
-        } else if (common.isNewLine(b)) {
+        } else if (utils.isNewLine(b)) {
             self.token_buffer.appendSlice(&[_]u8{ '\\', b }) catch |e| {
                 self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                 return e;
@@ -873,7 +873,7 @@ pub const Lexer = struct {
                     // error already reported
                     return error.BadStringEscape;
                 }
-                const num_written: usize = common.toUnicodeCodepoint(hex[0..4]) catch {
+                const num_written: usize = utils.toUnicodeCodepoint(hex[0..4]) catch {
                     self.reportError(
                         "(Lexer): '\\u{s}' is not a valid unicode escape",
                         .{hex[0..4]},
@@ -887,7 +887,7 @@ pub const Lexer = struct {
                     // error already reported
                     return error.BadStringEscape;
                 }
-                const num_written: usize = common.toUnicodeCodepoint(hex[0..8]) catch {
+                const num_written: usize = utils.toUnicodeCodepoint(hex[0..8]) catch {
                     self.reportError(
                         "(Lexer): '\\U{s}' is not a valid unicode escape",
                         .{hex[0..8]},
@@ -921,7 +921,7 @@ pub const Lexer = struct {
                 return false;
             };
 
-            if (!common.isHex(b)) {
+            if (!utils.isHex(b)) {
                 self.reportError(
                     "(Lexer): expected hexadecimal digit found {c}",
                     .{b},
@@ -992,7 +992,7 @@ pub const Lexer = struct {
                 break;
             };
 
-            if (common.isDigit(b) or b == '_') {
+            if (utils.isDigit(b) or b == '_') {
                 self.token_buffer.append(b) catch {
                     self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                     return;
@@ -1040,7 +1040,7 @@ pub const Lexer = struct {
                 break;
             };
 
-            if (!common.isBinary(b) and b != '_') {
+            if (!utils.isBinary(b) and b != '_') {
                 self.unReadNByte(1);
                 break;
             }
@@ -1067,7 +1067,7 @@ pub const Lexer = struct {
                 break;
             };
 
-            if (!common.isOctal(b) and b != '_') {
+            if (!utils.isOctal(b) and b != '_') {
                 self.unReadNByte(1);
                 break;
             }
@@ -1093,7 +1093,7 @@ pub const Lexer = struct {
                 break;
             };
 
-            if (common.isDigit(b) or b == '_') {
+            if (utils.isDigit(b) or b == '_') {
                 self.token_buffer.append(b) catch {
                     self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                     return;
@@ -1139,7 +1139,7 @@ pub const Lexer = struct {
                 break;
             };
 
-            if (!common.isHex(b) and b != '_') {
+            if (!utils.isHex(b) and b != '_') {
                 self.unReadNByte(1);
                 break;
             }
@@ -1166,7 +1166,7 @@ pub const Lexer = struct {
                 break;
             };
 
-            if (common.isDigit(b)) {
+            if (utils.isDigit(b)) {
                 self.token_buffer.append(b) catch {
                     self.reportError(ERR_MSG_OUT_OF_MEMORY, .{});
                     return;
@@ -1249,7 +1249,7 @@ pub const Lexer = struct {
                         }
                         break;
                     };
-                    if (common.isDigit(c)) {
+                    if (utils.isDigit(c)) {
                         self.token_buffer.appendSlice(&.{ 'T', c }) catch {
                             self.reportError(
                                 ERR_MSG_OUT_OF_MEMORY,
@@ -1350,7 +1350,7 @@ pub const Lexer = struct {
                 return;
             };
 
-            if (common.isNewLine(b) or common.isWhiteSpace(b)) {
+            if (utils.isNewLine(b) or utils.isWhiteSpace(b)) {
                 self.skipBytes(&(WHITESPACE ++ NEWLINE));
                 continue;
             }
@@ -1398,7 +1398,7 @@ pub const Lexer = struct {
                 return;
             };
 
-            if (common.isNewLine(b) or common.isWhiteSpace(b)) {
+            if (utils.isNewLine(b) or utils.isWhiteSpace(b)) {
                 self.skipBytes(&(WHITESPACE ++ NEWLINE));
                 continue;
             }
@@ -1443,7 +1443,7 @@ pub const Lexer = struct {
                 return;
             };
 
-            if (common.isNewLine(b)) {
+            if (utils.isNewLine(b)) {
                 self.reportError(
                     "(Lexer): Newline not allowed inside inline tables.",
                     .{},
@@ -1451,7 +1451,7 @@ pub const Lexer = struct {
                 return;
             }
 
-            if (common.isWhiteSpace(b)) {
+            if (utils.isWhiteSpace(b)) {
                 self.skipBytes(&WHITESPACE);
                 continue;
             }
@@ -1500,7 +1500,7 @@ pub const Lexer = struct {
                 return;
             };
 
-            if (common.isNewLine(b)) {
+            if (utils.isNewLine(b)) {
                 self.reportError(
                     "(Lexer): Newline not allowed inside inline tables.",
                     .{},
@@ -1508,7 +1508,7 @@ pub const Lexer = struct {
                 return;
             }
 
-            if (common.isWhiteSpace(b)) {
+            if (utils.isWhiteSpace(b)) {
                 self.skipBytes(&WHITESPACE);
                 continue;
             }
@@ -1581,7 +1581,7 @@ pub const Lexer = struct {
             .read_idx = 0,
             .position = .{ .line = 1, .column = 1 },
             .lex_start = .{ .line = 1, .column = 1 },
-            .token_buffer = try common.DynArray(u8).initCapacity(
+            .token_buffer = try utils.DynArray(u8).initCapacity(
                 allocator,
                 opt.LEXER_BUFFER_SIZE,
             ),
