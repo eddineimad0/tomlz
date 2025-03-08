@@ -47,7 +47,7 @@ pub fn DynArray(comptime T: type) type {
         }
 
         pub inline fn popOrNull(self: *Self) ?T {
-            return self.impl.popOrNull();
+            return self.impl.pop();
         }
 
         pub fn appendSlice(self: *Self, slice: []const T) Allocator.Error!void {

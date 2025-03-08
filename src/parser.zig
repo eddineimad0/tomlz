@@ -111,13 +111,13 @@ pub const Parser = struct {
         _ = self.arena.reset(.{ .free_all = {} });
         self.root.clearRetainingCapacity();
 
-        try self.root.ensureTotalCapacity(opt.DEFAULT_HASHMAP_SIZE);
+        try self.root.ensureTotalCapacity(opt.INITIAL_HASHMAP_SIZE);
         try self.implicit_map.ensureTotalCapacity(16);
         try self.inline_map.ensureTotalCapacity(16);
 
         var key_path = try common.DynArray(dt.Key).initCapacity(
             self.base_allocator,
-            opt.DEFAULT_ARRAY_SIZE,
+            opt.INITIAL_ARRAY_SIZE,
         );
         defer key_path.deinit();
 
@@ -156,7 +156,7 @@ pub const Parser = struct {
                         self.base_allocator,
                         try TomlValueArray.initCapacity(
                             self.arena.allocator(),
-                            opt.DEFAULT_ARRAY_SIZE,
+                            opt.INITIAL_ARRAY_SIZE,
                         ),
                     );
                     try self.pushState(
@@ -478,7 +478,7 @@ pub const Parser = struct {
                 }
             } else {
                 var new_table = dt.TomlTable.init(self.arena.allocator());
-                try new_table.ensureTotalCapacity(opt.DEFAULT_HASHMAP_SIZE);
+                try new_table.ensureTotalCapacity(opt.INITIAL_HASHMAP_SIZE);
                 try temp.put(
                     table_name,
                     dt.TomlValue{ .Table = new_table },
@@ -522,7 +522,7 @@ pub const Parser = struct {
                 }
             } else {
                 var new_table = dt.TomlTable.init(self.arena.allocator());
-                try new_table.ensureTotalCapacity(opt.DEFAULT_HASHMAP_SIZE);
+                try new_table.ensureTotalCapacity(opt.INITIAL_HASHMAP_SIZE);
                 try temp.put(
                     table_name,
                     dt.TomlValue{ .Table = new_table },
@@ -567,7 +567,7 @@ pub const Parser = struct {
         header_path: *common.DynArray(dt.Key),
     ) (mem.Allocator.Error || Parser.Error)!*dt.TomlTable {
         var new_table = dt.TomlTable.init(self.arena.allocator());
-        try new_table.ensureTotalCapacity(opt.DEFAULT_HASHMAP_SIZE);
+        try new_table.ensureTotalCapacity(opt.INITIAL_HASHMAP_SIZE);
         var tv = dt.TomlValue{ .Table = new_table };
         switch (self.state.context) {
             .Table => {
@@ -663,7 +663,7 @@ pub const Parser = struct {
             .free(tbl_array);
 
         var new_table = dt.TomlTable.init(self.arena.allocator());
-        try new_table.ensureTotalCapacity(opt.DEFAULT_HASHMAP_SIZE);
+        try new_table.ensureTotalCapacity(opt.INITIAL_HASHMAP_SIZE);
         tbl_array[tbl_array.len - 1] = new_table;
         const value = dt.TomlValue{ .TablesArray = tbl_array };
         try outter.put(self.state.key, value);
@@ -756,7 +756,7 @@ pub const Parser = struct {
         var has_leading_zero = false;
         if (num.len > 2 and
             (num[0] == '+' or
-            num[0] == '-') and
+                num[0] == '-') and
             num[1] == '0' and
             !(num[2] == '.' or num[2] == 'e'))
         {
@@ -764,10 +764,10 @@ pub const Parser = struct {
         } else if (num.len > 1 and
             num[0] == '0' and
             !(num[1] == 'b' or
-            num[1] == 'o' or
-            num[1] == 'x' or
-            num[1] == '.' or
-            num[1] == 'e'))
+                num[1] == 'o' or
+                num[1] == 'x' or
+                num[1] == '.' or
+                num[1] == 'e'))
         {
             has_leading_zero = true;
         }

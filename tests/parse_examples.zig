@@ -1,8 +1,9 @@
 const std = @import("std");
 const io = std.io;
 const fs = std.fs;
+
 const toml = @import("tomlz");
-var gpa_allocator = std.heap.GeneralPurposeAllocator(.{}){};
+var gpa_allocator: std.heap.DebugAllocator(.{}) = .init;
 
 fn parseTomlFile(f: fs.File) void {
     var ifs = io.StreamSource{ .file = f };

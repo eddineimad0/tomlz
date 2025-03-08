@@ -3,9 +3,8 @@ const std = @import("std");
 const tomlz = @import("tomlz");
 const process = std.process;
 const io = std.io;
-const json = std.json;
 const fmt = std.fmt;
-var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+var gpa: std.heap.DebugAllocator(.{}) = .init;
 
 pub fn main() void {
     defer std.debug.assert(gpa.deinit() == .ok);
@@ -15,7 +14,7 @@ pub fn main() void {
     var stdout = io.getStdOut();
 
     const input = stdin.readToEndAlloc(allocator, std.math.maxInt(usize)) catch |e| {
-        std.log.err("Allocation failure, Error={}\n", .{e});
+        std.log.err("Allocation failure, ({})\n", .{e});
         process.exit(1);
     };
     defer allocator.free(input);
