@@ -5,7 +5,7 @@ pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{});
     const build_options = createBuildOptions(b);
 
-    const tomlz = b.createModule(.{
+    const tomlz = b.addModule("tomlz", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -40,8 +40,10 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
     parse_examples_bin.root_module.addImport("tomlz", tomlz);
+    const parse_examples_install = b.addInstallArtifact(parse_examples_bin, .{});
     const examples_run_step = b.addRunArtifact(parse_examples_bin);
     const examples_step = b.step("parse-examples", "Compile and parse toml examples");
+    examples_step.dependOn(&parse_examples_install.step);
     examples_step.dependOn(&examples_run_step.step);
 
     const test_parser_bin = b.addExecutable(.{
@@ -51,10 +53,12 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
     test_parser_bin.root_module.addImport("tomlz", tomlz);
+    const tests_parser_install = b.addInstallArtifact(test_parser_bin, .{});
     const test_parser_step = b.step(
         "toml-test-parser",
         "Compile a parser binary to run against the toml test suite",
     );
+    test_parser_step.dependOn(&tests_parser_install.step);
     test_parser_step.dependOn(&test_parser_bin.step);
 
     const utest_bin = b.addTest(.{

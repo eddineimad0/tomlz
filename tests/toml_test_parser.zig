@@ -11,10 +11,13 @@ pub fn main() void {
     const allocator = gpa.allocator();
 
     var stdin = io.getStdIn();
+    defer stdin.close();
     var stdout = io.getStdOut();
+    defer stdout.close();
 
     const input = stdin.readToEndAlloc(allocator, std.math.maxInt(usize)) catch |e| {
         std.log.err("Allocation failure, ({})\n", .{e});
+        stdout.writer().print("Allocation failure, ({})\n", .{e}) catch unreachable;
         process.exit(1);
     };
     defer allocator.free(input);
@@ -33,7 +36,6 @@ pub fn main() void {
         process.exit(1);
     };
     defer allocator.free(json_out);
-
     _ = stdout.write(json_out) catch |e| {
         std.log.err("stdout write failure, Error={}", .{e});
     };
