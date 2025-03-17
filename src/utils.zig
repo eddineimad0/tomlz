@@ -5,6 +5,7 @@ const ascii = std.ascii;
 const unicode = std.unicode;
 const fmt = std.fmt;
 const math = std.math;
+const mem = std.mem;
 const io = std.io;
 
 const Allocator = std.mem.Allocator;
@@ -245,6 +246,65 @@ pub fn parseNanoSeconds(src: []const u8, ns: *u32) usize {
         }
     }
     return src.len;
+}
+
+pub fn isValidFloat(float: []const u8) bool {
+    var valid = true;
+    valid = valid and isUnderscoresSurrounded(float) and !hasLeadingZero(float);
+    // period check.
+    // 7. and 3.e+20 are not valid float in toml 1.0 spec
+    if (mem.indexOf(u8, float, &[_]u8{'.'})) |index| {
+        valid = valid and (float.len > index + 1 and isDigit(float[index + 1]));
+        valid = valid and (index > 0 and isDigit(float[index - 1]));
+    }
+
+    return valid;
+}
+
+pub fn isUnderscoresSurrounded(num: []const u8) bool {
+    if (num.len > 1) {
+        if (num[0] == '_' or num[num.len - 1] == '_') {
+            return false;
+        }
+
+        for (1..num.len - 1) |i| {
+            if (num[i] == '_') {
+                if (!isHex(num[i - 1]) or !isHex(num[i + 1])) {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+pub fn hasLeadingZero(num: []const u8) bool {
+    var has_leading_zero = false;
+    if (num.len > 2 and
+        (num[0] == '+' or
+            num[0] == '-') and
+        num[1] == '0' and
+        !(num[2] == '.' or num[2] == 'e'))
+    {
+        has_leading_zero = true;
+    } else if (num.len > 1 and
+        num[0] == '0' and
+        !(num[1] == 'b' or
+            num[1] == 'o' or
+            num[1] == 'x' or
+            num[1] == '.' or
+            num[1] == 'e'))
+    {
+        has_leading_zero = true;
+    }
+    return has_leading_zero;
+}
+
+pub fn isValidNumber(num: []const u8) bool {
+    var valid = true;
+    valid = valid and isUnderscoresSurrounded(num) and
+        !hasLeadingZero(num);
+    return valid;
 }
 
 pub fn skipUTF8BOM(in: *io.StreamSource) void {

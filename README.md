@@ -1,12 +1,12 @@
 A TOML parser written in zig that targets v1.0 specs of TOML.
 
 ## Supported zig versions
-✅ [0.13.0](https://ziglang.org/documentation/0.13.0/)   
+✅ [0.14.0](https://ziglang.org/documentation/0.14.0/)
 
 ## Test suite coverage
 [toml-test](https://github.com/toml-lang/toml-test) is a language-agnostic test suite to verify the correctness of TOML parsers and writers.
 
-Currently for the parser only 2 tests(invalid set) are failing and 413 are passing.
+The parser fails 2 tests in the invalid set that involves dotted keys, the 2 tests expect the parser to reject a niche confusing use case of toml dotted keys however they are accepted by the parser. this might get fixed in the future but for now it's not a priority.
 
 ## Usage
 ```zig
@@ -44,7 +44,7 @@ pub fn main() !void {
         // handle error.
     };
 
-    // parsed is of type toml.TomlTable which is an alias to 
+    // parsed is of type toml.TomlTable which is an alias to
     // std.StringHashMap(TomlValue).
     // toml.TomlValue type is a union with the following fields:
     // pub const TomlValue = union(TomlType) {
@@ -58,7 +58,7 @@ pub fn main() !void {
     //     DateTime: DateTime,
     // };
     // aside from DateTime all other types are standard zig types.
-    // all data returned by the parser is owned by the parser and 
+    // all data returned by the parser is owned by the parser and
     // will be freed once deinit is called or if parse() is called again,
     // consider cloning anything you need to outlive the parser.
 

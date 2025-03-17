@@ -1,5 +1,5 @@
 const std = @import("std");
-const common = @import("common.zig");
+const utils = @import("utils.zig");
 const opt = @import("build_options");
 
 const mem = std.mem;
@@ -7,7 +7,7 @@ const fmt = std.fmt;
 
 pub const ParseError = struct {
     error_message: ?[]const u8,
-    heap_buffer: common.String8,
+    heap_buffer: utils.String8,
     stack_buffer: [opt.ERROR_STACK_BUFFER_SIZE]u8,
 
     const Self = @This();
@@ -15,7 +15,7 @@ pub const ParseError = struct {
 
     pub fn init(allocator: mem.Allocator) Self {
         return .{
-            .heap_buffer = common.String8.init(allocator),
+            .heap_buffer = utils.String8.init(allocator),
             .error_message = null,
             .stack_buffer = undefined,
         };
