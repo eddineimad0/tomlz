@@ -13,14 +13,15 @@ Currently for the parser only 2 tests(invalid set) are failing and 413 are passi
 const std = @import("std");
 const toml = @import("tomlz");
 const io = std.io;
+var gpa: std.heap.DebugAllocator(.{}) = .init;
+
 pub fn main() !void {
-    var gpa_allocator = std.heap.GeneralPurposeAllocator(.{}){};
-    defer std.debug.assert(gpa_allocator.deinit() == .ok);
-    const allocator = gpa_allocator.allocator();
+    defer std.debug.assert(gpa.deinit() == .ok);
+    const allocator = gpa.allocator();
 
     // the toml parser takes an allocator and uses it internally
     for all allocations.
-    var p = toml.Parser.init(gpa_allocator.allocator());
+    var p = toml.Parser.init(allocator);
     // when done deinit the parser to free all allocated resources.
     defer p.deinit();
 
